@@ -1,13 +1,67 @@
 """
 Multiprocessing worker for batch edge analysis.
+
+Memory optimisation: on Linux with `fork`, workers inherit the parent's memory.
+Use `set_shared_df(df)` in the parent BEFORE spawning workers to avoid each
+worker reloading the full dataframe from parquet.
 """
 import json, os, sys, re, logging, warnings
 from pathlib import Path
+from typing import Optional
 import pandas as pd
 import numpy as np
 from analysis.report import analyze_edge
 
-# Worker processes need their own file logging setup
+# ── Shared DataFrame (inherited via fork, zero-copy) ──────────────────
+_SHARED_DF: Optional[pd.DataFrame] = None
+
+
+def set_shared_df(df: pd.DataFrame):
+    """Set the DataFrame to be shared across forked worker processes.
+    Call this in the parent process BEFORE spawning worker processes.
+    Workers inherit the reference via fork copy-on-write (no memory copy)."""
+    global _SHARED_DF
+    _SHARED_DF = df
+
+
+# ── Worker count capped by available memory ───────────────────────────
+
+def _available_memory_mb() -> float:
+    """Return available RAM in MB."""
+    try:
+        import psutil
+        return psutil.virtual_memory().available / (1024 * 1024)
+    except Exception:
+        pass
+    # Fallback: read /proc/meminfo on Linux
+    try:
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    return float(line.split()[1]) / 1024
+                if line.startswith('MemFree:'):
+                    return float(line.split()[1]) / 1024
+    except Exception:
+        pass
+    return 64 * 1024  # assume 64GB
+
+
+def _optimal_workers(df: Optional[pd.DataFrame] = None,
+                     max_workers: Optional[int] = None) -> int:
+    """Return safe worker count based on available memory and dataframe size."""
+    cpu_count = os.cpu_count() or 4
+    hard_limit = min(max_workers or cpu_count, cpu_count)
+
+    if df is not None and len(df) > 0 and len(df.columns) > 0:
+        df_mb = max(df.memory_usage(deep=True).sum() / (1024 * 1024), 0.1)
+        avail_mb = _available_memory_mb()
+        max_by_mem = max(1, int(avail_mb / (df_mb * 2.5)))
+        return min(hard_limit, max_by_mem)
+    return hard_limit
+
+
+# ── Logging for worker processes ──────────────────────────────────────
+
 _log_dir = Path(__file__).parent.parent / 'logs'
 _log_dir.mkdir(parents=True, exist_ok=True)
 _fh_warn = logging.FileHandler(str(_log_dir / 'warning.log'), encoding='utf-8')
@@ -20,13 +74,19 @@ logging.getLogger().addHandler(_fh_warn)
 logging.getLogger().addHandler(_fh_err)
 logging.captureWarnings(True)
 
+
 def _mp_run_edge(args):
     edge_name, data_path, sm_path, quick, bt_path, reports_dir_name = args
     sys.path.insert(0, os.path.dirname(bt_path))
     import pandas as pd
     import matplotlib; matplotlib.use('Agg')
     from edge_registry import register_edge, get_edge, _registry, Edge, ConditionFn
-    df = pd.read_parquet(data_path)
+    # Use shared DataFrame via fork inheritance (zero-copy) when available
+    global _SHARED_DF
+    if _SHARED_DF is not None:
+        df = _SHARED_DF
+    else:
+        df = pd.read_parquet(data_path)
     def momentum_sma20(d):
         sma20 = d['close'].rolling(20).mean().bfill()
         s = pd.Series(0, index=d.index)

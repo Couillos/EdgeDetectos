@@ -71,10 +71,13 @@ function showProgress(label, total) {
 }
 function updateProgress() {
   const t = state.currentTask; if (!t) return;
-  const pct = t.total ? Math.min(100, (t.completed / t.total) * 100) : 0;
+  const done = t.completed || 0, skipped = t.skipped || 0, failed = t.failed || 0;
+  const processed = t.processed || (done + skipped + failed);
+  const total = t.total || 1;
+  const pct = Math.min(100, (processed / total) * 100);
   const elapsed = ((Date.now() - t.start) / 1000).toFixed(1);
   qs('#progress-label').textContent = t.label;
-  qs('#progress-stats').textContent = `${t.completed}/${t.total} (${t.skipped} skipped, ${t.failed} failed)`;
+  qs('#progress-stats').textContent = `${done}/${total} done (${processed} total, ${skipped} skipped, ${failed} failed)`;
   qs('#progress-fill').style.width = pct + '%';
   qs('#progress-elapsed').textContent = `${elapsed}s`;
 }
@@ -94,6 +97,7 @@ function connectSSE(url, onProgress, onComplete) {
       if (state.currentTask) {
         state.currentTask.completed = d.completed || 0;
         state.currentTask.total = d.total || 0;
+        state.currentTask.processed = d.processed || 0;
         if (d.status === 'skip') state.currentTask.skipped++;
         if (d.status === 'fail') state.currentTask.failed++;
         updateProgress();
@@ -539,7 +543,8 @@ async function renderEdgeDetail(container, name) {
       );
       if (edge.report_png) {
         const wrap = $el('div', { className: 'report-image-wrap' });
-        const img = $el('img', { src: edge.report_png, alt: `Report for ${edge.signal_name}`, style: { width: '100%', maxWidth: '1200px', display: 'block', margin: '0 auto', border: '1px solid var(--border)', borderRadius: '8px' } });
+        const symParam = state.detailSymbol ? `?symbol=${encodeURIComponent(state.detailSymbol)}` : '';
+        const img = $el('img', { src: edge.report_png + symParam, alt: `Report for ${edge.signal_name}`, style: { width: '100%', maxWidth: '1200px', display: 'block', margin: '0 auto', border: '1px solid var(--border)', borderRadius: '8px' } });
         img.onerror = () => {
           wrap.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:14px">Report image not available (analysis was run with --quick).</div>';
         };

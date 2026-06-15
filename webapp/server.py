@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional, List
 from functools import partial
 from contextlib import asynccontextmanager
+from urllib.parse import quote, unquote
 
 import pandas as pd
 import numpy as np
@@ -24,7 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import backtest  # noqa: ensures backtest.py is importable for workers
 from edge_registry import _registry, get_edge, Edge, register_edge, ConditionFn
 from bt_engine.data import load_data, register_example_edges, load_user_edges
-from bt_engine.worker import _mp_run_edge
+from bt_engine.worker import _mp_run_edge, set_shared_df, _optimal_workers
 from analysis.core import compute_forward_returns, DEFAULT_HORIZONS
 from engine.indicators import INDICATORS
 from engine.evaluator import generate_edge_file
@@ -162,11 +163,11 @@ def _read_analysis_json_for_edge(edge_name: str, symbol: str) -> Optional[dict]:
 
 
 def _edge_report_json_url(name: str) -> str:
-    return f'/api/report/{name}/json'
+    return f'/api/report/{quote(name)}/json'
 
 
 def _edge_report_png_url(name: str) -> str:
-    return f'/api/report/{name}/png'
+    return f'/api/report/{quote(name)}/png'
 
 
 # ─── Cache ─────────────────────────────────────────────────────────────
@@ -320,7 +321,6 @@ def list_indicators():
 
 @app.get('/api/edges/{name:path}')
 def edge_detail(name: str, symbol: str = 'BTC/USDT'):
-    from urllib.parse import unquote
     name = unquote(name)
     edge = get_edge(name)
     if not edge:
@@ -346,7 +346,6 @@ def edge_detail(name: str, symbol: str = 'BTC/USDT'):
 
 @app.get('/api/report/{name:path}/json')
 def report_json(name: str):
-    from urllib.parse import unquote
     name = unquote(name)
     for sym in SYMBOLS:
         aj = _read_analysis_json(name, sym)
@@ -359,10 +358,10 @@ def report_json(name: str):
 # This handler also matches /api/report/{name}/json (more specific above)
 
 @app.get('/api/report/{name:path}/png')
-def report_png(name: str):
-    from urllib.parse import unquote
+def report_png(name: str, symbol: str = ''):
     name = unquote(name)
-    for sym in SYMBOLS:
+    syms = [symbol] if symbol else SYMBOLS
+    for sym in syms:
         rd = _reports_dir(sym)
         png_path = PROJECT_ROOT / rd / _safe_name(name) / 'report.png'
         if png_path.exists():
@@ -572,7 +571,6 @@ async def _run_analysis(task_id: str, body: AnalyzeRequest):
 
         tmp_dir = Path('/tmp/edge_analysis')
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        n_workers = os.cpu_count() or 4
 
         for sym_idx, symbol in enumerate(symbols):
             df = load_data(since=body.since, until=body.until, symbol=symbol)
@@ -590,18 +588,23 @@ async def _run_analysis(task_id: str, body: AnalyzeRequest):
             if body.force:
                 for ename in edge_names:
                     safe = _safe_name(ename)
-                    aj_path = Path(reports_dir_name) / safe / 'analysis.json'
+                    rep_path = PROJECT_ROOT / reports_dir_name / safe
+                    aj_path = rep_path / 'analysis.json'
                     if aj_path.exists():
                         try:
                             aj_path.unlink()
                         except Exception:
                             pass
-                        png_path = Path(reports_dir_name) / safe / 'report.png'
-                        if png_path.exists():
-                            try:
-                                png_path.unlink()
-                            except Exception:
-                                pass
+                    png_path = rep_path / 'report.png'
+                    if png_path.exists():
+                        try:
+                            png_path.unlink()
+                        except Exception:
+                            pass
+
+            # Share DataFrame via fork inheritance — workers avoid reloading from parquet
+            set_shared_df(df)
+            n_workers = _optimal_workers(df, max_workers=os.cpu_count())
 
             with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as pool:
                 futs = []
@@ -615,27 +618,19 @@ async def _run_analysis(task_id: str, body: AnalyzeRequest):
                     if result.startswith('[done]'):
                         task['completed'] += 1
                         ename = result[6:].strip()
-                        task['updates'].append({
-                            'type': 'progress', 'edge_name': f'[{symbol}] {ename}',
-                            'completed': task['completed'], 'total': task['total'],
-                            'status': 'done', 'elapsed': elapsed,
-                        })
                     elif result.startswith('[skip]'):
                         task['skipped'] += 1
                         ename = result[6:].strip()
-                        task['updates'].append({
-                            'type': 'progress', 'edge_name': f'[{symbol}] {ename}',
-                            'completed': task['completed'], 'total': task['total'],
-                            'status': 'skip', 'elapsed': elapsed,
-                        })
                     elif result.startswith('[FAIL]'):
                         task['failed'] += 1
                         ename = result[6:].strip()
-                        task['updates'].append({
-                            'type': 'progress', 'edge_name': f'[{symbol}] {ename}',
-                            'completed': task['completed'], 'total': task['total'],
-                            'status': 'fail', 'elapsed': elapsed,
-                        })
+                    processed = task['completed'] + task['skipped'] + task['failed']
+                    task['updates'].append({
+                        'type': 'progress', 'edge_name': f'[{symbol}] {ename}',
+                        'completed': task['completed'], 'total': task['total'],
+                        'processed': processed, 'status': 'done',
+                        'elapsed': elapsed,
+                    })
 
             for f in [df_parquet, sm_path]:
                 try:
@@ -652,7 +647,8 @@ async def _run_analysis(task_id: str, body: AnalyzeRequest):
             'failed': task['failed'],
             'elapsed': round(time.time() - task['start_time'], 1),
         }
-        _init_analysis_cache()
+        for sym in symbols:
+            _rebuild_cache_for_symbol(sym)
 
     try:
         await loop.run_in_executor(None, _do_analysis)
