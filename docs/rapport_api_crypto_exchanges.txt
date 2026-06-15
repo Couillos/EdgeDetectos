@@ -1,0 +1,925 @@
+================================================================================
+  RAPPORT : API DES EXCHANGES CRYPTO — RÉCUPÉRATION DES DONNÉES DEPUIS 2020
+================================================================================
+  Colonnes étudiées : funding, open_interest, taker_buy/sell_volume,
+                      liquidations_long/short, long_short_ratio
+  Exchanges couverts : Binance, Bybit, OKX, Bitget, Gate.io, Deribit,
+                       HTX/Huobi, BitMEX
+  Date du rapport : 15 juin 2026
+================================================================================
+
+
+TABLE DES MATIÈRES
+------------------
+1. Synthèse comparative (tableau global)
+2. Binance Futures
+3. Bybit
+4. OKX
+5. Bitget
+6. Gate.io
+7. Deribit
+8. HTX / Huobi
+9. BitMEX
+10. Fournisseurs de données tiers
+11. Recommandations et stratégie combinée
+
+
+================================================================================
+1. SYNTHÈSE COMPARATIVE — TABLEAU GLOBAL
+================================================================================
+
+Légende : ✅ = disponible depuis 2020 via API REST publique
+          ⚠️ = disponible mais limité (snapshot, granularité, ou profondeur)
+          ❌ = non disponible ou historique trop court
+
++------------+------------+------------+------------+------------+------------+
+| Donnée     | Binance    | Bybit      | OKX        | Bitget     | Gate.io    |
++------------+------------+------------+------------+------------+------------+
+| Funding    | ✅ depuis  | ✅ depuis  | ⚠️ ~3 mois | ✅ depuis  | ✅ depuis  |
+| Rate       | nov 2019   | mai 2020   | seulement  | lancement  | lancement  |
+|            | 8h/4h/2h   | 8h/4h/2h/1h| 8h         | 8h/1h      | 8h         |
++------------+------------+------------+------------+------------+------------+
+| Open       | ⚠️ 1 mois  | ✅ depuis  | ⚠️ ~3 mois | ❌ snapshot | ✅ depuis  |
+| Interest   | seulement  | mai 2020   | seulement  | seulement  | ~2020      |
+|            | 5m→1d      | 5m→1d      | 5m→1d      |            | 1m→1d      |
++------------+------------+------------+------------+------------+------------+
+| Taker      | ⚠️ 30 jours| ❌ pas     | ⚠️ ~3 mois | ⚠️ depuis  | ❌ pas     |
+| Buy/Sell   | seulement  | d'endpoint | seulement  | ~mi-2022   | d'endpoint |
+| Volume     | 5m→1d      |            | 5m→1d      | 5m→1d      |            |
++------------+------------+------------+------------+------------+------------+
+| Liquidat.  | ❌ WebSocket| ❌ WS seul | ❌ 7 jours | ❌ pas     | ✅ depuis  |
+| Long/Short | seul       |            | seulement  | d'endpoint | ~2020      |
+|            |            |            |            | public     | 1m→1d      |
++------------+------------+------------+------------+------------+------------+
+| Long/Short | ⚠️ 30 jours| ✅ depuis  | ⚠️ ~3-6    | ⚠️ depuis  | ❌ pas     |
+| Ratio      | seulement  | juil 2020  | mois       | ~mi-2022   | d'endpoint |
+|            | 5m→1d      | 5m→1d      | 5m→1d      | 5m→1d      |            |
++------------+------------+------------+------------+------------+------------+
+
++------------+------------+------------+
+| Donnée     | Deribit    | HTX/Huobi  |
++------------+------------+------------+
+| Funding    | ✅ depuis  | ✅ depuis  |
+| Rate       | 2018       | oct 2020   |
+|            | 1h (horaire| 8h/4h/1h   |
++------------+------------+------------+
+| Open       | ❌ snapshot | ✅ depuis  |
+| Interest   | seulement  | oct 2020   |
+|            |            | 1h/4h/12h/1d|
++------------+------------+------------+
+| Taker      | ❌ pas     | ❌ pas     |
+| Buy/Sell   | d'endpoint | d'endpoint |
+| Volume     |            |            |
++------------+------------+------------+
+| Liquidat.  | ✅ depuis  | ⚠️ 90 jours|
+| Long/Short | ~2018      | seulement  |
+|            | par événem.|            |
++------------+------------+------------+
+| Long/Short | ❌ pas     | ✅ depuis  |
+| Ratio      | d'endpoint | oct 2020   |
+|            |            | 5m→1d      |
++------------+------------+------------+
+
++------------+
+| BitMEX     |
++------------+
+| ✅ depuis  |
+| 2016       |
+| 8h         |
++------------+
+| ⚠️ snapshot|
+| seulement  |
++------------+
+| ⚠️ via     |
+| trades     |
+| 1m/5m/1h/1d|
++------------+
+| ❌ pas     |
+| d'historique|
++------------+
+| ❌ pas     |
+| d'endpoint |
++------------+
+
+
+CONSTAT MAJEUR : Aucun exchange ne fournit les 5 types de données
+depuis 2020 via API REST publique. Il faut combiner plusieurs sources
+et/ou utiliser des fournisseurs tiers.
+
+
+================================================================================
+2. BINANCE FUTURES
+================================================================================
+
+Base URL : https://fapi.binance.com (USDT-M)
+           https://dapi.binance.com (COIN-M)
+Documentation : https://developers.binance.com/docs
+
+------------------------------------------------------------------------
+2.1 FUNDING RATE
+------------------------------------------------------------------------
+Endpoint      : GET /fapi/v1/fundingRate
+Paramètres    : symbol, startTime, endTime, limit (max 1000)
+Granularité   : Par settlement (8h par défaut, 4h ou 2h sur contrats récents)
+Depuis 2020   : ✅ OUI — données depuis novembre 2019 (lancement Binance
+                Futures). Aucune limite de profondeur historique.
+Rate limit    : 500 req / 5 min / IP
+WebSocket     : Non pour l'historique. Temps réel via markPrice@1s
+Réponse       : symbol, fundingRate, fundingTime, markPrice
+
+Exemple de requête :
+  GET https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&startTime=1577836800000&limit=1000
+
+------------------------------------------------------------------------
+2.2 OPEN INTEREST
+------------------------------------------------------------------------
+Endpoint (snapshot)  : GET /fapi/v1/openInterest
+Endpoint (historique) : GET /futures/data/openInterestHist
+Paramètres (hist.)   : symbol, period, limit (max 500), startTime, endTime
+Granularité          : 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+Depuis 2020          : ❌ NON — uniquement le dernier mois ("Only the data
+                       of the latest 1 month is available")
+Rate limit           : 1000 req / 5 min / IP
+Alternative          : Collecter les snapshots en temps réel et stocker,
+                       ou utiliser Tardis.dev / CoinGlass
+
+------------------------------------------------------------------------
+2.3 TAKER BUY/SELL VOLUME
+------------------------------------------------------------------------
+Endpoint      : GET /futures/data/takerlongshortRatio
+Paramètres    : symbol, period, limit (max 500), startTime, endTime
+Granularité   : 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+Depuis 2020   : ❌ NON — uniquement les 30 derniers jours
+Rate limit    : 1000 req / 5 min / IP
+Réponse       : buySellRatio, buyVol, sellVol, timestamp
+
+Attention : Cet endpoint retourne un ratio + volumes buy/sell agrégés,
+mais pas le volume taker brut notional séparé.
+
+Alternative pour données depuis 2020 :
+  - Aggregated Trades : GET /fapi/v1/aggTrades (isBuyerMaker permet de
+    reconstruire le volume taker buy/sell)
+  - Klines : GET /fapi/v1/klines incluent takerBuyBaseAssetVolume et
+    takerBuyQuoteAssetVolume, disponibles depuis le lancement du contrat
+
+------------------------------------------------------------------------
+2.4 LIQUIDATIONS (LONG / SHORT)
+------------------------------------------------------------------------
+REST (public)       : ❌ GET /fapi/v1/allForceOrders — DÉPRÉCIÉ depuis
+                       avril 2021
+REST (compte)       : GET /fapi/v1/forceOrders — nécessite API Key,
+                       liquidations de l'utilisateur uniquement, 90 jours max
+WebSocket            : <symbol>@forceOrder — stream temps réel par symbole
+                      !forceOrder@arr — stream temps réel tous marchés
+Granularité          : Événementiel (1 snapshot / 1000ms)
+Depuis 2020          : ❌ NON — aucun historique agrégé disponible
+Alternative          : CoinGlass, Tardis.dev, Coinalyze
+
+------------------------------------------------------------------------
+2.5 LONG/SHORT RATIO
+------------------------------------------------------------------------
+3 endpoints distincts :
+
+a) GET /futures/data/globalLongShortAccountRatio
+   → Ratio de TOUS les comptes traders
+b) GET /futures/data/topLongShortPositionRatio
+   → Ratio des positions des top 20% traders
+c) GET /futures/data/topLongShortAccountRatio
+   → Ratio des comptes des top 20% traders
+
+Paramètres    : symbol, period, limit (max 500), startTime, endTime
+Granularité   : 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+Depuis 2020   : ❌ NON — uniquement les 30 derniers jours
+Rate limit    : 1000 req / 5 min / IP
+
+Réponse (global) : longShortRatio, longAccount, shortAccount, timestamp
+Réponse (top)    : longShortRatio, longAccount, shortAccount, timestamp
+
+
+================================================================================
+3. BYBIT
+================================================================================
+
+Base URL : https://api.bybit.com
+Documentation : https://bybit-exchange.github.io/docs/v5
+Version API : V5
+
+------------------------------------------------------------------------
+3.1 FUNDING RATE
+------------------------------------------------------------------------
+Endpoint      : GET /v5/market/funding/history
+Paramètres    : category (linear/inverse), symbol, startTime, endTime,
+                limit (max 200)
+Granularité   : Par settlement (8h par défaut, varie : 1h/2h/4h/8h selon
+                le contrat — vérifiable via /v5/market/instruments-info,
+                champ fundingIntervalHour)
+Depuis 2020   : ✅ OUI — contrats inverse depuis fin 2019, contrats linear
+                (USDT) depuis mai 2020
+Rate limit    : ~600 req / 5 sec / IP (market data)
+WebSocket     : tickers.{symbol} — champs fundingRate, nextFundingTime
+
+------------------------------------------------------------------------
+3.2 OPEN INTEREST
+------------------------------------------------------------------------
+Endpoint      : GET /v5/market/open-interest
+Paramètres    : category, symbol, intervalTime, startTime, endTime,
+                limit (max 200), cursor
+Granularité   : 5min, 15min, 30min, 1h, 4h, 1d
+Depuis 2020   : ✅ OUI — depuis le lancement du symbole (mai 2020 pour
+                les contrats linear)
+Rate limit    : ~600 req / 5 sec / IP
+Réponse       : openInterest (OI total), timestamp
+WebSocket     : tickers.{symbol} — champ openInterestValue
+
+------------------------------------------------------------------------
+3.3 TAKER BUY/SELL VOLUME
+------------------------------------------------------------------------
+Endpoint      : ❌ AUCUN endpoint REST agrégé dédié
+Alternatives  :
+  a) GET /v5/market/recent-trade — trades bruts avec champ side (Buy/Sell),
+     max 1000 par requête, pas d'historique profond via REST
+  b) Téléchargement CSV historique :
+     https://www.bybit.com/en/derivative-activity/developer
+     — Données de trades complètes avec côté taker
+     — Contrats inverse depuis nov 2019, linear depuis mai 2020
+  c) Fournisseurs tiers : Tardis.dev, CoinGlass
+WebSocket     : publicTrade.{symbol} — flux de trades avec champ S (Buy/Sell)
+
+------------------------------------------------------------------------
+3.4 LIQUIDATIONS
+------------------------------------------------------------------------
+Endpoint      : ❌ AUCUN endpoint REST pour l'historique
+WebSocket     : allLiquidation.{symbol} — temps réel (push 500ms)
+                Champs : S (Buy=position longue liquidée, Sell=courte),
+                         v (taille), p (prix de faillite), T (timestamp)
+Depuis 2020   : ❌ NON — temps réel uniquement
+Alternative   : Tardis.dev (liquidations depuis le 18 décembre 2020),
+                CoinGlass
+
+------------------------------------------------------------------------
+3.5 LONG/SHORT RATIO
+------------------------------------------------------------------------
+Endpoint      : GET /v5/market/account-ratio
+Paramètres    : category, symbol, period, startTime, endTime,
+                limit (max 500), cursor
+Granularité   : 5min, 15min, 30min, 1h, 4h, 1d
+Depuis 2020   : ✅ OUI — depuis le 20 juillet 2020
+Rate limit    : ~600 req / 5 sec / IP
+Réponse       : buyRatio, sellRatio (ratio de comptes en position
+                longue/courte, de 0 à 1)
+
+
+================================================================================
+4. OKX
+================================================================================
+
+Base URL : https://www.okx.com
+Documentation : https://www.okx.com/docs-v5
+Version API : V5
+
+------------------------------------------------------------------------
+4.1 FUNDING RATE
+------------------------------------------------------------------------
+Endpoint (actuel)   : GET /api/v5/public/funding-rate
+Endpoint (historique): GET /api/v5/public/funding-rate-history
+Paramètres (hist.)  : instId, before, after, limit (max 100)
+Granularité         : 8h (par settlement, 3 settlements/jour)
+Depuis 2020         : ⚠️ PARTIEL — ~3 mois via API REST.
+                      Téléchargement OKX : depuis mars 2022.
+                      Via Tardis.dev : depuis 2019.
+Rate limit          : 20 req / 2s / IP
+WebSocket           : wss://ws.okx.com:8443/ws/v5/public — canal funding-rate
+
+------------------------------------------------------------------------
+4.2 OPEN INTEREST
+------------------------------------------------------------------------
+Endpoint (instantané) : GET /api/v5/public/open-interest
+Endpoint (historique) : GET /api/v5/rubik/stat/contracts/open-interest-history
+Endpoint (OI+volume)  : GET /api/v5/rubik/stat/contracts/open-interest-volume
+Paramètres (hist.)    : instId, period, limit (max ~100)
+Granularité           : 5m, 15m, 30m, 1H, 4H, 1D
+Depuis 2020           : ⚠️ PARTIEL — ~3 mois via API Rubik.
+                        Téléchargement OKX : depuis sept 2021.
+                        Via Tardis.dev : depuis mars 2019.
+Rate limit            : 20 req / 2s / IP
+Réponse               : timestamp, OI en contrats, OI en coin, OI en USD
+WebSocket             : canal open-interest
+
+------------------------------------------------------------------------
+4.3 TAKER BUY/SELL VOLUME
+------------------------------------------------------------------------
+Endpoint (spot)      : GET /api/v5/rubik/stat/taker-volume
+Endpoint (contrat)   : GET /api/v5/rubik/stat/taker-volume-contract
+Paramètres (contrat) : instId, period, limit (max ~100)
+Granularité (spot)   : 5m, 1H, 1D
+Granularité (contrat): 5m, 15m, 30m, 1H, 4H, 1D
+Depuis 2020          : ⚠️ PARTIEL — ~3 mois (contrat) ou ~6 mois (spot)
+Rate limit           : 20 req / 2s / IP
+Réponse (contrat)    : timestamp, takerBuyVolume, takerSellVolume (en contrats)
+
+------------------------------------------------------------------------
+4.4 LIQUIDATIONS
+------------------------------------------------------------------------
+Endpoint      : GET /api/v5/public/liquidation-orders
+Paramètres    : instType (SWAP/FUTURES/OPTION), instFamily, state (filled),
+                before, after, limit (max 100)
+Granularité   : Tick-by-tick (événements individuels)
+Depuis 2020   : ❌ NON — 7 jours glissants uniquement
+                Via Tardis.dev : depuis décembre 2020
+Rate limit    : 20 req / 2s / IP
+Réponse       : instFamily, instId, details[{bkPx, posSide (long/short),
+                side, sz, ts}]
+
+CONSTAT : C'est la plus forte limitation d'OKX — seulement 7 jours
+d'historique pour les liquidations.
+
+------------------------------------------------------------------------
+4.5 LONG/SHORT RATIO
+------------------------------------------------------------------------
+4 endpoints disponibles :
+  a) GET /api/v5/rubik/stat/contracts/long-short-account-ratio
+     → Ratio par currency (5m, 1H, 1D, ~6 mois)
+  b) GET /api/v5/rubik/stat/contracts/long-short-account-ratio-contract
+     → Ratio par contrat (5m→1D, ~3 mois)
+  c) GET /api/v5/rubik/stat/contracts/long-short-account-ratio-contract-top-trader
+     → Top traders comptes (5m→1D, ~3 mois)
+  d) GET /api/v5/rubik/stat/contracts/long-short-position-ratio-contract-top-trader
+     → Top traders positions (5m→1D, ~3 mois)
+
+Depuis 2020   : ⚠️ PARTIEL — ~3 à 6 mois maximum via API
+Rate limit    : 20 req / 2s / IP
+
+
+================================================================================
+5. BITGET
+================================================================================
+
+Base URL : https://api.bitget.com
+Documentation : https://www.bitget.com/api-doc/contract/market
+Version API : V2
+
+------------------------------------------------------------------------
+5.1 FUNDING RATE
+------------------------------------------------------------------------
+Endpoint (historique) : GET /api/v2/mix/market/history-fund-rate
+Endpoint (actuel)     : GET /api/v2/mix/market/current-fund-rate
+Paramètres (hist.)    : symbol, productType (USDT-FUTURES, COIN-FUTURES,
+                        USDC-FUTURES), pageSize (max 100), pageNo
+Granularité           : Par settlement (8h ou 1h selon le contrat)
+Depuis 2020           : ✅ OUI — depuis le lancement de chaque contrat
+                        (BTCUSDT ≈ mi-2020)
+Rate limit            : 20 req/s / IP
+
+------------------------------------------------------------------------
+5.2 OPEN INTEREST
+------------------------------------------------------------------------
+Endpoint      : GET /api/v2/mix/market/open-interest
+Paramètres    : symbol, productType
+Granularité   : ❌ Snapshot en temps réel uniquement — PAS d'historique
+Depuis 2020   : ❌ NON — aucun endpoint historique public
+Alternative   : Collecter les snapshots en continu ou utiliser Tardis.dev
+
+------------------------------------------------------------------------
+5.3 TAKER BUY/SELL VOLUME
+------------------------------------------------------------------------
+Endpoint      : GET /api/v2/mix/market/taker-buy-sell
+Paramètres    : symbol, period (5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1D)
+Granularité   : 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1D, 1Dutc
+Depuis 2020   : ⚠️ PARTIEL — disponible depuis ≈ mi-2022 (lancement
+                des endpoints "trading big data")
+Rate limit    : 1 req/s / IP (très restrictif)
+Réponse       : buyVolume, sellVolume, ts
+
+NOTE : Bitget est le SEUL exchange à proposer un endpoint dédié
+pour le volume taker buy/sell agrégé. Mais la profondeur historique
+est limitée à ~mi-2022.
+
+------------------------------------------------------------------------
+5.4 LIQUIDATIONS
+------------------------------------------------------------------------
+Endpoint      : ❌ AUCUN endpoint public pour les liquidations agrégées
+Alternative   : Endpoint privé GET /api/v2/mix/order/orders-history avec
+                filtre orderSource=liquidation (historique personnel uniquement)
+Depuis 2020   : ❌ NON — pas de données publiques
+Alternative   : CoinGlass, Tardis.dev
+
+------------------------------------------------------------------------
+5.5 LONG/SHORT RATIO
+------------------------------------------------------------------------
+Endpoint (positions)  : GET /api/v2/mix/market/long-short
+Endpoint (comptes)    : GET /api/v2/mix/market/account-long-short
+Paramètres            : symbol, period (5m→1D)
+Granularité           : 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1D, 1Dutc
+Depuis 2020           : ⚠️ PARTIEL — depuis ≈ mi-2022
+Rate limit            : 1 req/s / IP
+Réponse (positions)   : longRatio, shortRatio, longShortRatio, ts
+Réponse (comptes)     : longAccountRatio, shortAccountRatio,
+                        longShortAccountRatio, ts
+
+
+================================================================================
+6. GATE.IO
+================================================================================
+
+Base URL : https://api.gateio.ws/api/v4
+Documentation : https://www.gate.com/docs/developers/apiv4
+Version API : V4
+Settle : usdt (USDT-margined), btc (BTC-margined)
+
+------------------------------------------------------------------------
+6.1 FUNDING RATE
+------------------------------------------------------------------------
+Endpoint      : GET /futures/{settle}/funding_rate
+Paramètres    : contract, from (unix timestamp sec), to, limit (max 1000)
+Granularité   : Par settlement (8h)
+Depuis 2020   : ✅ OUI — depuis le lancement des contrats perpetual
+Rate limit    : ~10 req/s
+
+------------------------------------------------------------------------
+6.2 OPEN INTEREST
+------------------------------------------------------------------------
+Endpoint      : GET /futures/{settle}/contract_stats
+Paramètres    : contract (obligatoire), from, interval, limit (max 100)
+Granularité   : 1m, 5m, 15m, 30m, 1h, 4h, 1d
+Depuis 2020   : ✅ OUI — données disponibles depuis ≈ 2020
+Rate limit    : ~10 req/s
+Réponse       : open_interest, long_liq_size, short_liq_size,
+                mark_price, time
+
+NOTE MAJEURE : Gate.io est le SEUL exchange à proposer un historique OI
+avec granularité fine via API publique. L'endpoint contract_stats
+combine OI + liquidations + mark price.
+
+------------------------------------------------------------------------
+6.3 TAKER BUY/SELL VOLUME
+------------------------------------------------------------------------
+Endpoint      : ❌ AUCUN endpoint public dédié
+Alternative   : GET /futures/{settle}/trades — champ role (maker/taker),
+                agrégation manuelle nécessaire
+Depuis 2020   : ⚠️ PARTIEL — via trades bruts, agrégation à la charge
+                de l'utilisateur
+Rate limit    : ~10 req/s
+
+------------------------------------------------------------------------
+6.4 LIQUIDATIONS
+------------------------------------------------------------------------
+Endpoint (agrégé)    : GET /futures/{settle}/contract_stats
+                       → champs long_liq_size, short_liq_size
+Endpoint (détaillé)  : GET /futures/{settle}/liq_orders
+Paramètres (stats)   : contract, from, interval (1m→1d), limit (max 100)
+Paramètres (liq)     : contract, from, to, limit (max 100)
+Granularité (stats)  : 1m, 5m, 15m, 30m, 1h, 4h, 1d
+Depuis 2020          : ✅ OUI — contract_stats disponible depuis ≈ 2020
+Rate limit           : ~10 req/s
+
+NOTE MAJEURE : Gate.io est le meilleur exchange pour les liquidations
+agrégées. L'endpoint contract_stats fournit long_liq_size et
+short_liq_size avec granularité fine.
+
+------------------------------------------------------------------------
+6.5 LONG/SHORT RATIO
+------------------------------------------------------------------------
+Endpoint      : ❌ AUCUN endpoint dédié
+Depuis 2020   : ❌ NON — Gate.io n'expose pas le ratio L/S
+Alternative   : CoinGlass, Amberdata
+
+
+================================================================================
+7. DERIBIT
+================================================================================
+
+Base URL : https://www.deribit.com/api/v2
+Documentation : https://docs.deribit.com
+Protocole : JSON-RPC 2.0 (REST + WebSocket)
+Instruments : BTC-PERPETUAL, ETH-PERPETUAL, SOL-PERPETUAL, etc.
+
+------------------------------------------------------------------------
+7.1 FUNDING RATE
+------------------------------------------------------------------------
+Endpoint      : public/get_funding_rate_history
+Paramètres    : instrument_name, start_timestamp (ms), end_timestamp (ms)
+Granularité   : 1h (HORAIRE — la plus fine du marché !)
+Depuis 2020   : ✅ OUI — depuis 2018 (lancement du BTC-PERPETUAL)
+Rate limit    : ~20 req/s (système de crédits)
+Autres        : public/get_funding_chart_data (length: 8h, 24h, 1m)
+                public/get_funding_rate_value
+Réponse       : timestamp, index_price, prev_index_price, interest_8h,
+                interest_1h
+
+NOTE : Deribit est le SEUL exchange à proposer un funding rate avec
+granularité horaire. Tous les autres se limitent au settlement (8h).
+
+------------------------------------------------------------------------
+7.2 OPEN INTEREST
+------------------------------------------------------------------------
+Endpoint      : public/get_book_summary_by_instrument
+Paramètres    : instrument_name
+Granularité   : ❌ Snapshot en temps réel uniquement
+Depuis 2020   : ❌ NON — pas d'historique via API publique
+Alternative   : Collecter les snapshots via WebSocket ticker ou Tardis.dev
+WebSocket     : ticker.{instrument_name}.{interval} — champ open_interest
+
+------------------------------------------------------------------------
+7.3 TAKER BUY/SELL VOLUME
+------------------------------------------------------------------------
+Endpoint      : ❌ AUCUN endpoint agrégé dédié
+Alternative   : public/get_last_trades_by_instrument_and_time
+                — champ tick_direction (indicateur agressif)
+                — agrégation manuelle nécessaire
+Depuis 2020   : ⚠️ PARTIEL — via trades bruts
+
+------------------------------------------------------------------------
+7.4 LIQUIDATIONS
+------------------------------------------------------------------------
+Endpoint      : public/get_last_settlements_by_currency
+                public/get_last_settlements_by_instrument
+Paramètres    : currency (BTC/ETH), type (settlement/delivery/bankruptcy),
+                count (max 100), continuation, search_start_timestamp (ms)
+Granularité   : Par événement de settlement
+Depuis 2020   : ✅ OUI — depuis ≈ 2018
+Rate limit    : Système de crédits (standard)
+Réponse       : instrument_name, position, mark_price,
+                session_profit_loss, timestamp
+
+NOTE : Les événements type=bankruptcy correspondent aux liquidations.
+Deribit est l'un des rares exchanges à proposer un historique de
+liquidations via API REST publique.
+
+------------------------------------------------------------------------
+7.5 LONG/SHORT RATIO
+------------------------------------------------------------------------
+Endpoint      : ❌ AUCUN endpoint dédié
+Depuis 2020   : ❌ NON — Deribit ne publie pas ce ratio
+Alternative   : Amberdata (ratio calculé à partir des données Deribit)
+
+
+================================================================================
+8. HTX / HUOBI
+================================================================================
+
+Base URL : https://api.hbdm.com
+  - Linear Swap (USDT-M) : /linear-swap-api/v1/...
+  - Coin Swap (Coin-M)   : /swap-api/v1/...
+
+------------------------------------------------------------------------
+8.1 FUNDING RATE
+------------------------------------------------------------------------
+Endpoint (actuel)    : GET /linear-swap-api/v1/swap_funding_rate
+Endpoint (historique): GET /linear-swap-api/v1/swap_historical_funding_rate
+Endpoint (batch)     : GET /linear-swap-api/v1/swap_batch_funding_rate
+Paramètres (hist.)   : contract_code (ex: BTC-USDT), page_index, page_size
+                       (max 50)
+Granularité          : Par période de funding (8h par défaut, 4h ou 1h
+                       depuis 2024)
+Depuis 2020          : ✅ OUI — API USDT-M lancée en octobre 2020
+Rate limit           : 240 req / 3 sec
+
+------------------------------------------------------------------------
+8.2 OPEN INTEREST
+------------------------------------------------------------------------
+Endpoint (instantané) : GET /linear-swap-api/v1/swap_open_interest
+Endpoint (historique) : GET /linear-swap-api/v1/swap_his_open_interest
+Paramètres (hist.)    : contract_code, period (60min/4hour/12hour/1day),
+                        size (1-200), amount_type (1=contrats, 2=crypto)
+Granularité           : 1h, 4h, 12h, 1d
+Depuis 2020           : ✅ OUI — depuis octobre 2020
+Rate limit            : 240 req / 3 sec
+Réponse               : volume (OI en contrats), value (OI notionnel USDT), ts
+
+------------------------------------------------------------------------
+8.3 TAKER BUY/SELL VOLUME
+------------------------------------------------------------------------
+Endpoint      : ❌ AUCUN endpoint dédié
+Alternative   : GET /linear-swap-api/v1/swap_trade_detail — trades avec
+                champ direction (buy/sell), agrégation manuelle
+Depuis 2020   : ⚠️ PARTIEL — via trades bruts (Tardis.dev archives
+                depuis 2020-10-30)
+
+------------------------------------------------------------------------
+8.4 LIQUIDATIONS
+------------------------------------------------------------------------
+Endpoint      : GET /linear-swap-api/v1/swap_liquidation_orders
+                GET /linear-swap-api/v3/swap_liquidation_orders
+Paramètres    : contract_code, trade_type (0=tous, 5=close, 6=open),
+                create_date (7 ou 90 jours), page_index, page_size (max 50)
+Granularité   : Événementiel
+Depuis 2020   : ❌ NON — max 90 jours de profondeur
+Réponse       : direction (buy/sell), offset (open/close), volume, price,
+                amount, trade_turnover, created_at
+
+------------------------------------------------------------------------
+8.5 LONG/SHORT RATIO
+------------------------------------------------------------------------
+Endpoint (comptes)   : GET /linear-swap-api/v1/swap_elite_account_ratio
+Endpoint (positions) : GET /linear-swap-api/v1/swap_elite_position_ratio
+Paramètres           : contract_code, period
+Granularité          : 5min, 15min, 30min, 60min, 4hour, 1day
+Depuis 2020          : ✅ OUI — depuis le lancement (oct 2020)
+Rate limit           : 240 req / 3 sec
+Réponse (comptes)    : buy_ratio, sell_ratio, locked_ratio, ts
+Réponse (positions)  : buy_ratio, sell_ratio, ts
+
+
+================================================================================
+9. BITMEX
+================================================================================
+
+Base URL : https://www.bitmex.com/api/v1
+Documentation : https://www.bitmex.com/app/apiOverview
+Protocole : REST (style table avec filtres génériques)
+
+------------------------------------------------------------------------
+9.1 FUNDING RATE
+------------------------------------------------------------------------
+Endpoint      : GET /api/v1/funding
+Paramètres    : symbol (ex: XBTUSD), filter, columns, count (1-500), start,
+                reverse, startTime, endTime
+Granularité   : Par période de funding (8h pour XBTUSD)
+Depuis 2020   : ✅ OUI — depuis 2016 (lancement de XBTUSD)
+Rate limit    : 30 req/min (non authentifié), 120 req/min (authentifié)
+Réponse       : timestamp, symbol, fundingInterval, fundingRate,
+                fundingRateDaily
+
+------------------------------------------------------------------------
+9.2 OPEN INTEREST
+------------------------------------------------------------------------
+Endpoint      : GET /api/v1/instrument (champs openInterest, openValue)
+                GET /api/v1/stats (OI par rootSymbol)
+                GET /api/v1/stats/history (historique stats globales)
+Granularité   : ❌ Snapshot uniquement pour l'OI par instrument
+Depuis 2020   : ⚠️ PARTIEL — instantané en REST, historique via
+                collecte WebSocket ou Tardis.dev
+WebSocket     : instrument — push toutes les 5s
+
+------------------------------------------------------------------------
+9.3 TAKER BUY/SELL VOLUME
+------------------------------------------------------------------------
+Endpoint      : ❌ AUCUN endpoint dédié
+Alternative 1 : GET /api/v1/trade/bucketed (OHLCV)
+                Granularité : 1m, 5m, 1h, 1d
+                Inclut : volume, turnover, homeNotional, foreignNotional
+                MAIS : pas de ventilation buy/sell
+Alternative 2 : GET /api/v1/trade (trades individuels avec champ side)
+Depuis 2020   : ✅ OUI — trades disponibles depuis le lancement,
+                agrégation manuelle par side nécessaire
+
+------------------------------------------------------------------------
+9.4 LIQUIDATIONS
+------------------------------------------------------------------------
+Endpoint      : GET /api/v1/liquidation
+Paramètres    : symbol, filter, columns, count (max 500), start, reverse
+Réponse       : orderID, symbol, side (Buy/Sell), price, leavesQty
+Depuis 2020   : ❌ NON — l'endpoint ne retourne que les liquidations
+                ACTIVES (en cours d'exécution). Citation officielle :
+                "Unfortunately, we don't have historical liquidation data.
+                You can start building this yourself using the /Liquidation
+                endpoint."
+Alternative   : WebSocket liquidation + Tardis.dev (archives depuis
+                mars 2019)
+
+------------------------------------------------------------------------
+9.5 LONG/SHORT RATIO
+------------------------------------------------------------------------
+Endpoint      : ❌ AUCUN endpoint dédié
+Depuis 2020   : ❌ NON — BitMEX ne publie pas ce ratio
+Alternative   : CoinGlass, Coinalyze, Amberdata
+
+
+================================================================================
+10. FOURNISSEURS DE DONNÉES TIERS
+================================================================================
+
+Pour combler les lacunes des API d'exchanges (notamment données
+historiques profondes et liquidations), ces fournisseurs sont
+indispensables :
+
+------------------------------------------------------------------------
+10.1 TARDIS.DEV
+------------------------------------------------------------------------
+Site         : https://tardis.dev
+Couverture   : Binance, Bybit, OKX, Bitget, Gate.io, Deribit, HTX, BitMEX
+Données      : Trades, order book, funding rate, OI, liquidations
+Prix         : Plans payants (dès ~100$/mois pour un exchange)
+Avantages    :
+  - Archives complètes depuis 2019/2020 pour la plupart des exchanges
+  - Format normalisé (Databento-like)
+  - Replay via API REST ou archives S3
+  - Données de liquidations historiques (Bybit depuis déc 2020,
+    Deribit depuis mars 2019, etc.)
+
+Couverture par exchange :
+  - Binance    : depuis nov 2019
+  - Bybit      : depuis fin 2019 (inverse), mai 2020 (linear)
+  - OKX        : depuis mars 2019
+  - Bitget     : depuis ~2021
+  - Gate.io    : depuis ~2020
+  - Deribit    : depuis mars 2019
+  - HTX/Huobi  : depuis oct 2020
+  - BitMEX     : depuis mars 2019
+
+------------------------------------------------------------------------
+10.2 COINGLASS
+------------------------------------------------------------------------
+Site         : https://coinglass.com
+API Docs     : https://docs.coinglass.com
+Données      : Liquidations, L/S ratio, OI, funding rate, taker volume,
+                Fear & Greed Index
+Avantages    :
+  - Données AGRÉGÉES multi-exchanges
+  - Endpoints dédiés pour liquidations historiques, L/S ratio,
+    taker buy/sell volume
+  - API REST payante (plans dès ~29$/mois)
+  - Couverture depuis 2020 pour la plupart des métriques
+
+Endpoints clés :
+  - aggregated-taker-buysell-volume-history
+  - long-short-ratio-history
+  - liquidation-history
+  - open-interest-history
+  - funding-rate-history
+
+------------------------------------------------------------------------
+10.3 AMBERDATA
+------------------------------------------------------------------------
+Site         : https://amberdata.io
+Données      : Toutes les métriques dérivées, liquidations, L/S ratio
+Positionnement : Institutionnel
+Prix         : Sur devis (généralement >1000$/mois)
+
+------------------------------------------------------------------------
+10.4 COINALYZE
+------------------------------------------------------------------------
+Site         : https://coinalyze.net
+Données      : Liquidations, OI, funding rate, prix
+Prix         : Plans gratuits + payants
+Avantages    : Bonne couverture des liquidations agrégées
+
+------------------------------------------------------------------------
+10.5 COINAPI
+------------------------------------------------------------------------
+Site         : https://coinapi.io
+Données      : OI, funding rate, liquidations, prix
+Prix         : Plans gratuits (100 req/jour) + payants
+
+------------------------------------------------------------------------
+10.6 DATA DOWNLOADS OFFICIELS
+------------------------------------------------------------------------
+Plusieurs exchanges proposent des téléchargements CSV gratuits :
+
+  - Bybit     : https://www.bybit.com/en/derivative-activity/developer
+  - OKX       : https://www.okx.com/historical-data
+                (funding depuis mars 2022, trades depuis sept 2021)
+  - Binance   : https://www.binance.com/en/landing/data
+                (trades et klines agrégés, pas de liquidations)
+  - BitMEX    : https://public.bitmex.com/ (trades et quotes CSV)
+
+
+================================================================================
+11. RECOMMANDATIONS ET STRATÉGIE COMBINÉE
+================================================================================
+
+------------------------------------------------------------------------
+11.1 MEILLEUR EXCHANGE PAR TYPE DE DONNÉE
+------------------------------------------------------------------------
+
+FUNDING RATE (depuis 2020) :
+  1. Binance   — ✅ le plus fiable, données depuis nov 2019, pas de limite
+  2. Bybit     — ✅ données depuis mai 2020, bonne pagination
+  3. Deribit   — ✅ granularité 1h (la plus fine !), depuis 2018
+  4. Bitget    — ✅ depuis lancement, pagination par pageNo
+  5. Gate.io   — ✅ depuis lancement, pagination from/to
+  6. HTX       — ✅ depuis oct 2020, mais page_size max 50
+  7. BitMEX    — ✅ depuis 2016, mais BTC/ETH seulement
+  8. OKX       — ⚠️ seulement ~3 mois via API (depuis mars 2022 en CSV)
+
+OPEN INTEREST (depuis 2020) :
+  1. Gate.io   — ✅ MEILLEUR : historique avec granularité 1m→1d
+  2. Bybit     — ✅ historique avec granularité 5m→1d, depuis mai 2020
+  3. HTX       — ✅ historique avec granularité 1h/4h/12h/1d
+  4. Binance   — ⚠️ seulement 1 mois
+  5. OKX       — ⚠️ seulement ~3 mois
+  6. Deribit   — ❌ snapshot seulement
+  7. Bitget    — ❌ snapshot seulement
+  8. BitMEX    — ❌ snapshot seulement
+
+TAKER BUY/SELL VOLUME (depuis 2020) :
+  1. Bitget    — ⚠️ seul avec endpoint dédié, mais depuis ~mi-2022
+  2. Binance   — ⚠️ 30 jours via API, mais reconstruisible via aggTrades
+  3. OKX       — ⚠️ ~3 mois via API
+  4. Bybit     — ❌ pas d'endpoint (CSV ou tiers nécessaire)
+  5. Gate.io   — ❌ pas d'endpoint (trades bruts)
+  6. Deribit   — ❌ pas d'endpoint (trades bruts)
+  7. HTX       — ❌ pas d'endpoint (trades bruts)
+  8. BitMEX    — ⚠️ reconstruisible via trades bucketed
+
+Pour des données depuis 2020 : CoinGlass ou reconstruction via
+aggTrades/klines (Binance) ou trades CSV (Bybit).
+
+LIQUIDATIONS LONG/SHORT (depuis 2020) :
+  1. Gate.io   — ✅ MEILLEUR : long_liq_size/short_liq_size avec
+                  granularité 1m→1d via contract_stats
+  2. Deribit   — ✅ settlements type=bankruptcy, depuis 2018
+  3. CoinGlass — ✅ API agrégée multi-exchanges (payant)
+  4. Tardis.dev — ✅ archives WebSocket (payant)
+  5. HTX       — ⚠️ seulement 90 jours
+  6. Binance   — ❌ endpoint déprécié, WebSocket temps réel
+  7. Bybit     — ❌ WebSocket temps réel seulement
+  8. OKX       — ❌ seulement 7 jours
+  9. Bitget    — ❌ pas d'endpoint public
+  10. BitMEX   — ❌ pas d'historique
+
+LONG/SHORT RATIO (depuis 2020) :
+  1. Bybit     — ✅ depuis juil 2020, granularité 5m→1d
+  2. HTX       — ✅ depuis oct 2020, granularité 5min→1d (top traders)
+  3. Bitget    — ⚠️ depuis ~mi-2022, granularité 5m→1d
+  4. Binance   — ⚠️ seulement 30 jours
+  5. OKX       — ⚠️ ~3-6 mois
+  6. CoinGlass — ✅ agrégé multi-exchanges (payant)
+  7. Gate.io   — ❌ pas d'endpoint
+  8. Deribit   — ❌ pas d'endpoint
+  9. BitMEX    — ❌ pas d'endpoint
+
+------------------------------------------------------------------------
+11.2 STRATÉGIE COMBINÉE RECOMMANDÉE (API gratuites)
+------------------------------------------------------------------------
+
+Pour maximiser la couverture des 5 métriques depuis 2020 avec les
+API publiques gratuites :
+
+  FUNDING RATE     → Binance (principal) + Deribit (granularité 1h)
+  OPEN INTEREST    → Gate.io (principal, 1m→1d) + Bybit (5m→1d) + HTX
+  TAKER BUY/SELL   → Bitget (depuis mi-2022) + Binance aggTrades
+                      (reconstruction historique)
+  LIQUIDATIONS     → Gate.io (principal, contract_stats) + Deribit
+                      (bankruptcy settlements)
+  LONG/SHORT RATIO → Bybit (principal, depuis juil 2020) + HTX
+                      (depuis oct 2020)
+
+------------------------------------------------------------------------
+11.3 STRATÉGIE AVEC FOURNISSEURS TIERS (données depuis 2020 complètes)
+------------------------------------------------------------------------
+
+Pour obtenir TOUTES les données depuis 2020 sans lacunes :
+
+  Option A — Tardis.dev (recommandé pour le raw data) :
+    - Archives complètes de trades, order book, tickers
+    - Permet de reconstruire taker volume, OI, liquidations
+    - Coût : ~100-300$/mois par exchange
+    - + Gate.io API (contract_stats) pour OI + liquidations agrégées
+
+  Option B — CoinGlass (recommandé pour les métriques agrégées) :
+    - Endpoints dédiés pour les 5 métriques
+    - Données agrégées multi-exchanges
+    - Coût : ~29-99$/mois
+    - Plus rapide à intégrer que Tardis.dev
+
+  Option C — Hybride (le plus rentable) :
+    - API publiques gratuites pour funding + OI + L/S ratio
+    - CoinGlass pour liquidations + taker volume historiques
+    - Coût minimal
+
+------------------------------------------------------------------------
+11.4 RÉSUMÉ DES GRANULARITÉS PAR MÉTRIQUE
+------------------------------------------------------------------------
+
+FUNDING RATE :
+  - 1h     : Deribit uniquement
+  - 2h/4h  : Binance, Bybit (certains contrats)
+  - 8h     : Tous les exchanges (settlement standard)
+
+OPEN INTEREST :
+  - 1m     : Gate.io
+  - 5m     : Binance, Bybit, OKX
+  - 15m    : Binance, Bybit, OKX, Gate.io
+  - 30m    : Binance, Bybit, OKX, Gate.io
+  - 1h     : Tous (sauf Bitget, Deribit, BitMEX = snapshot)
+  - 4h     : Binance, Bybit, OKX, Gate.io, HTX
+  - 12h    : HTX
+  - 1d     : Tous avec historique
+
+TAKER BUY/SELL VOLUME :
+  - 5m     : Binance, OKX, Bitget
+  - 15m    : Binance, OKX, Bitget
+  - 30m    : Binance, OKX, Bitget
+  - 1h     : Binance, OKX, Bitget
+  - 4h     : Binance, OKX, Bitget
+  - 1d     : Binance, OKX, Bitget
+  - tick   : Bybit, Gate.io, Deribit, HTX, BitMEX (agrégation manuelle)
+
+LIQUIDATIONS :
+  - 1m→1d  : Gate.io uniquement (contract_stats)
+  - tick   : Deribit (settlements), HTX (90j), OKX (7j)
+  - temps réel : Binance, Bybit, Bitget, BitMEX (WebSocket)
+
+LONG/SHORT RATIO :
+  - 5m     : Binance, Bybit, OKX, Bitget, HTX
+  - 15m    : Binance, Bybit, OKX, Bitget, HTX
+  - 30m    : Binance, Bybit, OKX, Bitget, HTX
+  - 1h     : Binance, Bybit, OKX, Bitget, HTX
+  - 4h     : Binance, Bybit, OKX, Bitget, HTX
+  - 1d     : Binance, Bybit, OKX, Bitget, HTX
+
+
+================================================================================
+FIN DU RAPPORT
+================================================================================

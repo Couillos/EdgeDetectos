@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.so
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data cache
+cache/
+*.pkl
+*.parquet
+/tmp/edge_analysis/
+/tmp/oos_validation/
+
+# Reports (auto-generated)
+reports/
+reports_*/
+
+# Edge ranking images (auto-generated)
+edge_ranking_*.png
+
+# OOS validation output (auto-generated)
+oos_*.txt
+oos_*.csv
+
+# Logs
+logs/
+
+# Generated documentation
+LANG.md
+
+# Web app node modules (if any added)
+node_modules/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter (scratch)
+.ipynb_checkpoints/
+*.ipynb

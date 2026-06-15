@@ -1,0 +1,1198 @@
+================================================================================
+  DOC TECHNIQUE — SYSTÈME DE COLLECTE DE DONNÉES CRYPTO DEPUIS 2020
+  Focus : API publiques gratuites sans authentification
+================================================================================
+  Version : 1.0
+  Date : 15 juin 2026
+  Objectif : Designer un système capable de récupérer les 5 métriques
+  suivantes depuis 2020, gratuitement, sans clé API :
+    - funding (taux de funding perpétuel)
+    - open_interest (OI notionnel)
+    - taker_buy_volume / taker_sell_volume (flux agressif)
+    - liquidations_long / liquidations_short (volume liquide)
+    - long_short_ratio (ratio comptes/positions long/short)
+================================================================================
+
+
+TABLE DES MATIÈRES
+------------------
+1. Vue d'ensemble et contraintes
+2. Matrice de décision (source prioritaire par métrique)
+3. Métrique 1 : Funding Rate
+4. Métrique 2 : Open Interest
+5. Métrique 3 : Taker Buy/Sell Volume
+6. Métrique 4 : Liquidations Long/Short
+7. Métrique 5 : Long/Short Ratio
+8. Architecture du système de collecte
+9. Limites communes et stratégies de mitigation
+10. Gap analysis — ce qui est impossible gratuitement
+11. Annexes : endpoints complets par exchange
+
+
+================================================================================
+1. VUE D'ENSEMBLE ET CONTRAINTES
+================================================================================
+
+1.1 CONTRAINTES DU CAHIER DES CHARGES
+--------------------------------------
+- Coût : 0€ (aucun abonnement payant)
+- Authentification : aucune (pas de clé API)
+- Profondeur : données depuis 2020 au minimum
+- Granularité : la plus fine disponible
+
+1.2 RÈGLE DE PRIORITÉ ENTRE EXCHANGES
+---------------------------------------
+Quand plusieurs exchanges proposent la même donnée aux mêmes conditions,
+l'ordre de priorité est :
+  1. Binance
+  2. Bybit
+  3. Les autres (OKX, Bitget, Gate.io, Deribit, HTX, BitMEX)
+
+1.3 CONSTAT FONDAMENTAL
+------------------------
+APRÈS VÉRIFICATION APPROFONDIE, seules 3 métriques sur 5 sont
+récupérables depuis 2020 gratuitement sans auth :
+
+  ✅ Funding Rate        — Binance (illimité depuis 2019)
+  ✅ Open Interest       — Bybit (depuis mai 2020) + HTX (depuis oct 2020)
+  ✅ Long/Short Ratio    — Bybit (depuis juil 2020) + HTX (depuis oct 2020)
+
+  ⚠️ Taker Buy/Sell Vol. — Reconstructible via Binance klines (depuis 2019)
+                           mais nécessite un calcul dérivé, pas un endpoint
+                           direct
+
+  ❌ Liquidations        — AUCUNE source gratuite sans auth depuis 2020
+                           pour les paires majeures USDT-M.
+                           Seul Deribit propose un historique (BTC/ETH
+                           inverse perpetual seulement)
+
+Les sections suivantes détaillent chaque métrique avec les endpoints
+exacts, les paramètres, les limites, et les stratégies de contournement.
+
+
+================================================================================
+2. MATRICE DE DÉCISION — SOURCE PRIORITAIRE PAR MÉTRIQUE
+================================================================================
+
++---------------------+----------+--------+---------+----------+-----------+
+| Métrique            | Source 1 | Source | Source 3| Source 4 | Fallback  |
+|                     | (primaire| 2      |         |          | (si gap)  |
++---------------------+----------+--------+---------+----------+-----------+
+| Funding Rate        | Binance  | Bybit  | Deribit | Bitget   | HTX       |
+|                     | ✅ 2019  | ✅2020 | ✅ 2018 | ✅ 2020  | ✅ 2020   |
++---------------------+----------+--------+---------+----------+-----------+
+| Open Interest       | Bybit    | HTX    | —       | —        | Gate.io   |
+|                     | ✅ 2020  | ✅2020 |         |          | ⚠️ 180j   |
++---------------------+----------+--------+---------+----------+-----------+
+| Taker Buy/Sell Vol. | Binance  | Bitget | Gate.io | —        | —         |
+|                     | ⚠️ klines| ⚠️2022 | ⚠️ 180j |          |           |
+|                     | (calcul) |        |         |          |           |
++---------------------+----------+--------+---------+----------+-----------+
+| Liquidations L/S    | Deribit  | Gate.io| —       | —        | ❌ Aucune  |
+|                     | ⚠️ BTC/  | ⚠️180j |         |          | source    |
+|                     | ETH only |        |         |          | gratuite  |
++---------------------+----------+--------+---------+----------+-----------+
+| Long/Short Ratio    | Bybit    | HTX    | Bitget  | —        | —         |
+|                     | ✅ juil  | ✅ oct | ⚠️ 2022 |          |           |
+|                     |   2020   |  2020  |         |          |           |
++---------------------+----------+--------+---------+----------+-----------+
+
+Légende :
+  ✅ = disponible depuis 2020, endpoint direct, pas de limite de profondeur
+  ⚠️ = disponible mais avec restriction (date, paires, granularité, calcul)
+  ❌ = pas de source gratuite sans auth depuis 2020
+
+
+================================================================================
+3. MÉTRIQUE 1 : FUNDING RATE
+================================================================================
+
+3.1 SOURCE PRIMAIRE : BINANCE
+------------------------------
+Endpoint      : GET /fapi/v1/fundingRate
+Base URL      : https://fapi.binance.com
+Auth          : Aucune
+Dispo depuis  : Novembre 2019 (lancement Binance Futures)
+Granularité   : Par settlement (8h par défaut, 4h ou 2h sur contrats récents)
+Limite/requête: 1000 enregistrements (paramètre limit)
+Rate limit    : 500 req / 5 min / IP
+
+Paramètres :
+  Nom        Type    Requis  Description
+  ---------  ------  ------  ------------------------------------------
+  symbol     STRING  Non     Paire (ex: BTCUSDT). Si absent = toutes
+  startTime  LONG    Non     Timestamp ms (inclusif)
+  endTime    LONG    Non     Timestamp ms (inclusif)
+  limit      INT     Non     Défaut 100, max 1000
+
+Réponse (tableau JSON) :
+  [
+    {
+      "symbol": "BTCUSDT",
+      "fundingRate": "-0.00012359",
+      "fundingTime": 1577836800000,
+      "markPrice": ""
+    }
+  ]
+
+Stratégie de pagination :
+  - Tant que le tableau retourné a length == limit, il y a potentiellement
+    des données supplémentaires
+  - Positionner startTime = dernier fundingTime + 1
+  - Répéter jusqu'à obtenir un tableau vide ou < limit
+
+Exemple de collecte complète BTCUSDT depuis 2020 :
+  GET /fapi/v1/fundingRate?symbol=BTCUSDT&startTime=1577836800000&limit=1000
+  Puis startTime = dernier fundingTime + 1, etc.
+
+Note : le champ markPrice est vide pour les anciens enregistrements
+(c'est normal, ce n'est pas un bug).
+
+3.2 SOURCE SECONDAIRE : BYBIT
+------------------------------
+Endpoint      : GET /v5/market/funding/history
+Base URL      : https://api.bybit.com
+Auth          : Aucune
+Dispo depuis  : Mai 2020 (contrats linear USDT)
+Granularité   : Par settlement (1h/2h/4h/8h selon le contrat)
+Limite/requête: 200 enregistrements (paramètre limit)
+Rate limit    : 600 req / 5 sec / IP
+
+Paramètres :
+  Nom        Type    Requis  Description
+  ---------  ------  ------  ------------------------------------------
+  category   STRING  Oui     "linear" ou "inverse"
+  symbol     STRING  Oui     Ex: "BTCUSDT"
+  startTime  INTEGER Non     Timestamp ms
+  endTime    INTEGER Non     Timestamp ms
+  limit      INTEGER Non     1-200, défaut 200
+
+Réponse :
+  {
+    "result": {
+      "list": [
+        {
+          "symbol": "BTCUSDT",
+          "fundingRate": "0.0001",
+          "fundingRateTimestamp": "1577836800000"
+        }
+      ]
+    }
+  }
+
+Stratégie de pagination :
+  - startTime/endTime + limit
+  - Avancer startTime après le dernier enregistrement récupéré
+
+3.3 SOURCE TERTIAIRE : DERIBIT (granularité 1h unique)
+--------------------------------------------------------
+Endpoint      : public/get_funding_rate_history
+Base URL      : https://www.deribit.com/api/v2
+Auth          : Aucune
+Dispo depuis  : 2018
+Granularité   : 1h (HORAIRE — unique sur le marché)
+Rate limit    : ~20 req/s (système de crédits)
+
+Paramètres :
+  Nom                Type    Requis  Description
+  -----------------  ------  ------  --------------------------------------
+  instrument_name    STRING  Oui     Ex: "BTC-PERPETUAL"
+  start_timestamp    INTEGER Non     Timestamp ms
+  end_timestamp      INTEGER Non     Timestamp ms
+
+Réponse :
+  {
+    "result": [
+      {
+        "timestamp": 1577836800000,
+        "index_price": 7200.5,
+        "prev_index_price": 7180.2,
+        "interest_8h": 0.00003,
+        "interest_1h": 0.00000375
+      }
+    ]
+  }
+
+AVANTAGE CLÉ : Granularité horaire (interest_1h), impossible à obtenir
+ailleurs gratuitement. Permet une reconstruction fine du funding.
+
+LIMITATION : Uniquement BTC-PERPETUAL, ETH-PERPETUAL, SOL-PERPETUAL,
+et quelques autres perpetuals inverse. Pas de contrats USDT-M.
+
+3.4 AUTRES SOURCES DISPONIBLES
+-------------------------------
+Bitget   : GET /api/v2/mix/market/history-fund-rate — depuis lancement
+HTX      : GET /linear-swap-api/v1/swap_historical_funding_rate — depuis oct 2020
+BitMEX   : GET /api/v1/funding — depuis 2016
+Gate.io  : GET /futures/{settle}/funding_rate — depuis lancement
+OKX      : ⚠️ seulement ~3 mois (non viable pour 2020)
+
+3.5 SYNTHÈSE FUNDING RATE
+---------------------------
+→ Source principale : Binance (le plus fiable, illimité, 8h/4h/2h)
+→ Granularité fine  : Deribit (1h, mais BTC/ETH inverse seulement)
+→ Fallback          : Bybit, Bitget, HTX, BitMEX, Gate.io
+→ Éviter            : OKX (3 mois seulement)
+
+
+================================================================================
+4. MÉTRIQUE 2 : OPEN INTEREST
+================================================================================
+
+4.1 CONSTAT : BINANCE ET OKX INUTILISABLES
+--------------------------------------------
+- Binance /futures/data/openInterestHist : seulement 1 mois
+- OKX /api/v5/rubik/stat/contracts/open-interest-history : ~3 mois
+- Gate.io /futures/{settle}/contract_stats : seulement 180 jours
+  (confirmé par test : erreur "from time exceeds 180-day limit")
+- Bitget : snapshot temps réel uniquement, pas d'historique
+- Deribit : snapshot temps réel uniquement
+- BitMEX : snapshot temps réel uniquement
+
+Les seules sources viables depuis 2020 sont Bybit et HTX.
+
+4.2 SOURCE PRIMAIRE : BYBIT
+-----------------------------
+Endpoint      : GET /v5/market/open-interest
+Base URL      : https://api.bybit.com
+Auth          : Aucune
+Dispo depuis  : Lancement du symbole (BTCUSDT linear ≈ mai 2020)
+               Doc officielle : "The upper limit time you can query is the
+               launch time of the symbol"
+Granularité   : 5min, 15min, 30min, 1h, 4h, 1d
+Limite/requête: 200 enregistrements (paramètre limit)
+Rate limit    : 600 req / 5 sec / IP
+
+Paramètres :
+  Nom            Type    Requis  Description
+  -------------  ------  ------  ----------------------------------------
+  category       STRING  Oui     "linear" ou "inverse"
+  symbol         STRING  Oui     Ex: "BTCUSDT"
+  intervalTime   STRING  Oui     "5min","15min","30min","1h","4h","1d"
+  startTime      STRING  Non     Timestamp ms (string!)
+  endTime        STRING  Non     Timestamp ms (string!)
+  limit          INTEGER Non     1-200, défaut 50
+  cursor         STRING  Non     Pour pagination
+
+Réponse :
+  {
+    "result": {
+      "list": [
+        {
+          "openInterest": "101679.083",
+          "timestamp": "1590019200000"
+        }
+      ],
+      "nextPageCursor": "eyJwYWdlIjoxfQ=="
+    }
+  }
+
+Stratégie de pagination (CURSOR-BASED) :
+  1. Première requête sans cursor
+  2. Récupérer nextPageCursor dans la réponse
+  3. Requête suivante avec cursor=<nextPageCursor>
+  4. Répéter jusqu'à nextPageCursor vide ou liste vide
+
+IMPORTANT : Bybit a changé la méthodologie de calcul de l'OI le
+11 juin 2026 (de bilatéral à unilatéral). Les données historiques
+antérieures reflètent l'ancien mode. Un facteur de conversion
+de ~2x peut être nécessaire pour harmoniser les séries.
+
+4.3 SOURCE SECONDAIRE : HTX (HOOBI)
+-------------------------------------
+Endpoint      : GET /linear-swap-api/v1/swap_his_open_interest
+Base URL      : https://api.hbdm.com
+Auth          : Aucune
+Dispo depuis  : Octobre 2020 (lancement API USDT-M)
+Granularité   : 60min, 4hour, 12hour, 1day
+Limite/requête: 200 enregistrements (paramètre size)
+Rate limit    : 240 req / 3 sec
+
+Paramètres :
+  Nom            Type    Requis  Description
+  -------------  ------  ------  ----------------------------------------
+  contract_code  STRING  Oui     Ex: "BTC-USDT"
+  period         STRING  Oui     "60min","4hour","12hour","1day"
+  amount_type    INTEGER Non     1=contrats, 2=crypto (défaut 1)
+  size           INTEGER Non     1-200, défaut 48
+  end_time       STRING  Non     Timestamp ms
+
+Réponse :
+  {
+    "data": {
+      "tick": [
+        {
+          "volume": "101679.083",
+          "value": "6681322376.02",
+          "amount_type": 1,
+          "ts": 1590019200000
+        }
+      ]
+    }
+  }
+
+Stratégie de pagination :
+  - Utiliser end_time pour paginer vers le passé
+  - end_time = timestamp du premier enregistrement - 1
+
+NOTE : "volume" = OI en nombre de contrats, "value" = OI notionnel en USDT.
+Le champ amount_type=2 donne l'OI en unité de crypto (ex: BTC).
+
+4.4 SYNTHÈSE OPEN INTEREST
+-----------------------------
+→ Source principale : Bybit (meilleure granularité : 5min, cursor-based)
+→ Source secondaire : HTX (granularité 1h min, bonne profondeur historique)
+→ Binance/OKX/Gate.io : inutilisables pour 2020 (1-6 mois seulement)
+→ Fallback récent   : Gate.io contract_stats (180 jours, très riche en
+  champs mais limité dans le temps)
+
+
+================================================================================
+5. MÉTRIQUE 3 : TAKER BUY/SELL VOLUME
+================================================================================
+
+5.1 CONSTAT : AUCUN ENDPOINT DIRECT DEPUIS 2020
+--------------------------------------------------
+Aucun exchange ne propose un endpoint direct "taker_buy_volume /
+taker_sell_volume" avec données historiques depuis 2020 sans auth :
+
+  - Binance takerlongshortRatio : 30 jours seulement
+  - Bitget taker-buy-sell       : depuis mi-2022 seulement
+  - OKX taker-volume-contract   : ~3 mois seulement
+  - Gate.io contract_stats      : 180 jours seulement (mais a les champs!)
+  - Bybit, Deribit, HTX, BitMEX : pas d'endpoint dédié
+
+5.2 SOURCE PRIMAIRE : BINANCE KLINES (RECONSTRUCTION)
+-------------------------------------------------------
+C'EST LA SEULE MÉTHODE GRATUITE POUR OBTENIR DES DONNÉES DEPUIS 2020.
+
+Endpoint      : GET /fapi/v1/klines
+Base URL      : https://fapi.binance.com
+Auth          : Aucune
+Dispo depuis  : Lancement du contrat (BTCUSDT = nov 2019)
+Granularité   : 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
+               (16 intervalles)
+Limite/requête: 1500 bougies (paramètre limit)
+Rate limit    : 2400 weight/min/IP ; klines pèse 1-10 selon limit
+
+Paramètres :
+  Nom        Type    Requis  Description
+  ---------  ------  ------  ------------------------------------------
+  symbol     STRING  Oui     Ex: "BTCUSDT"
+  interval   STRING  Oui     Ex: "1h", "5m", "1d"
+  startTime  LONG    Non     Timestamp ms
+  endTime    LONG    Non     Timestamp ms
+  limit      INT     Non     Défaut 500, max 1500
+
+Réponse (tableau de tableaux) :
+  [
+    [
+      1590019200000,      // [0]  Open time
+      "7200.50",          // [1]  Open
+      "7250.00",          // [2]  High
+      "7180.00",          // [3]  Low
+      "7230.00",          // [4]  Close
+      "15000.123",        // [5]  Volume (base asset)
+      1590019199999,      // [6]  Close time
+      "108450000.00",     // [7]  Quote asset volume (USDT)
+      3500,               // [8]  Number of trades
+      "8500.500",         // [9]  ★ Taker buy base asset volume
+      "61350000.00",      // [10] ★ Taker buy quote asset volume (USDT)
+      "0"                 // [11] Ignore
+    ]
+  ]
+
+MÉTHODE DE RECONSTRUCTION :
+  taker_buy_volume  = index[9]  (en unités de base, ex: BTC)
+                     ou index[10] (en USDT notionnel)
+  taker_sell_volume = index[5] - index[9]   (volume total - taker buy)
+                     ou index[7] - index[10] (en USDT notionnel)
+
+  En résumé :
+    taker_buy_base    = kline[9]
+    taker_sell_base   = kline[5] - kline[9]
+    taker_buy_quote   = kline[10]
+    taker_sell_quote  = kline[7] - kline[10]
+
+POIDS DES REQUÊTES SELON LIMIT :
+  limit 1-99    → weight = 1   → ~2400 req/min possibles
+  limit 100-499 → weight = 2   → ~1200 req/min possibles
+  limit 500-999 → weight = 5   → ~480 req/min possibles
+  limit 1000+   → weight = 10  → ~240 req/min possibles
+
+STRATÉGIE DE PAGINATION :
+  - Utiliser limit=1500 (poids=10) pour minimiser le nombre de requêtes
+  - Pour interval=1h et limit=1500 : ~62,5 jours par requête
+  - Pour interval=5m et limit=1500 : ~5,2 jours par requête
+  - Pour interval=1d et limit=1500 : ~4,1 ans par requête
+  - Avancer startTime = close_time + 1 du dernier enregistrement
+
+Exemple de calcul du débit pour récupérer 5 ans de données 1h :
+  - 5 ans ≈ 43 800 bougies 1h
+  - 43 800 / 1500 = ~30 requêtes
+  - À 240 req/min : ~8 secondes
+
+Exemple pour 5 ans en granularité 5m :
+  - 5 ans ≈ 525 600 bougies 5m
+  - 525 600 / 1500 = ~350 requêtes
+  - À 240 req/min : ~1,5 minute
+
+LIMITES DE CETTE APPROCHE :
+  1. Le volume taker sell est CALCULÉ par soustraction, pas fourni
+     directement. Il inclut donc potentiellement des erreurs d'arrondi.
+  2. La granularité la plus fine est 1m — impossible d'obtenir du
+     tick-by-tick via cette méthode.
+  3. Les klines agrègent les données par période : on perd la
+     séquence intra-bougie.
+  4. Le volume "taker buy" inclut tous les ordres agressifs à l'achat,
+     ce qui est correct pour notre définition.
+
+5.3 SOURCE SECONDAIRE : BITGET (depuis mi-2022)
+-------------------------------------------------
+Endpoint      : GET /api/v2/mix/market/taker-buy-sell
+Base URL      : https://api.bitget.com
+Auth          : Aucune
+Dispo depuis  : ≈ mi-2022 (lancement "trading big data")
+Granularité   : 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1D, 1Dutc
+Rate limit    : 1 req/s / IP (très restrictif!)
+
+Paramètres :
+  Nom          Type    Requis  Description
+  -----------  ------  ------  ----------------------------------------
+  symbol       STRING  Oui     Ex: "BTCUSDT"
+  period       STRING  Non     Défaut "5m"
+
+Réponse :
+  {
+    "data": [
+      {
+        "buyVolume": "8500.500",
+        "sellVolume": "6500.123",
+        "ts": "1656633600000"
+      }
+    ]
+  }
+
+UTILITÉ : Cet endpoint fournit directement les volumes taker buy/sell
+séparés. Utilisable pour les données récentes (mi-2022+) et pour
+valider/croiser avec la reconstruction Binance.
+
+5.4 SOURCE TERTIAIRE : GATE.IO contract_stats (180 jours)
+----------------------------------------------------------
+Endpoint      : GET /futures/{settle}/contract_stats
+Base URL      : https://api.gateio.ws/api/v4
+Auth          : Aucune
+Dispo depuis  : 180 jours seulement (confirmé par test)
+              (endpoint ajouté le 4 nov 2020 mais API limite à 180j)
+
+Champs pertinents (NON DOCUMENTÉS dans le SDK officiel mais présents) :
+  - long_taker_size  : volume taker long (contrats)
+  - short_taker_size : volume taker short (contrats)
+
+Granularité   : 1m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 7d, 30d
+Limite/requête: 2000 (max)
+Rate limit    : 300 req/s / IP
+
+UTILITÉ : Pour les 180 jours les plus récents uniquement. Permet de
+valider la reconstruction Binance sur la période commune.
+
+5.5 SYNTHÈSE TAKER BUY/SELL VOLUME
+-------------------------------------
+→ Source principale  : Binance klines (reconstruction par calcul)
+   - Seule méthode gratuite depuis 2020
+   - Granularité jusqu'à 1m
+   - Exécuter en priorité sur les intervalles 5m ou 1h pour le bon
+     compromis précision/débit
+→ Source secondaire  : Bitget (depuis mi-2022, endpoint direct)
+→ Validation récente : Gate.io contract_stats (180 jours)
+→ AUCUNE source     : pour taker volume tick-by-tick depuis 2020
+   gratuitement
+
+
+================================================================================
+6. MÉTRIQUE 4 : LIQUIDATIONS LONG/SHORT
+================================================================================
+
+6.1 CONSTAT CRITIQUE : PRESQUE AUCUNE SOURCE GRATUITE DEPUIS 2020
+--------------------------------------------------------------------
+C'est la métrique la plus problématique. Voici l'état de chaque exchange :
+
+  Binance   : Endpoint public déprécié depuis avril 2021. WebSocket
+              temps réel uniquement. ❌
+  Bybit     : WebSocket temps réel uniquement. ❌
+  OKX       : 7 jours glissants. ❌
+  Bitget    : Aucun endpoint public. ❌
+  Gate.io   : 180 jours via contract_stats. ⚠️ mais pas depuis 2020
+  HTX       : 90 jours max. ❌
+  BitMEX    : Liquidations actives uniquement, pas d'historique. ❌
+  Deribit   : ✅ Historique de settlements type=bankruptcy depuis 2018
+              MAIS uniquement BTC-PERPETUAL, ETH-PERPETUAL, etc.
+              (contrats inverse, pas USDT-M)
+
+6.2 SOURCE PRIMAIRE : DERIBIT (BTC/ETH INVERSE SEULEMENT)
+-----------------------------------------------------------
+Endpoint      : public/get_last_settlements_by_currency
+               public/get_last_settlements_by_instrument
+Base URL      : https://www.deribit.com/api/v2
+Auth          : Aucune
+Dispo depuis  : 2018 (lancement Deribit perpetuals)
+Granularité   : Par événement de settlement (tick-by-tick)
+Rate limit    : ~20 req/s (système de crédits)
+
+Paramètres (par currency) :
+  Nom                     Type     Requis  Description
+  ----------------------  -------  ------  --------------------------------
+  currency                STRING   Oui     "BTC" ou "ETH"
+  type                    STRING   Non     "bankruptcy" pour liquidations
+  count                   INTEGER  Non     Défaut 20, max 100
+  continuation            STRING   Non     Pour pagination
+  search_start_timestamp  INTEGER  Non     Timestamp ms
+
+Réponse :
+  {
+    "result": {
+      "settlements": [
+        {
+          "type": "bankruptcy",
+          "instrument_name": "BTC-PERPETUAL",
+          "timestamp": 1590019200000,
+          "session_profit_loss": -12.5,
+          "position": -1000,
+          "mark_price": 7200.5
+        }
+      ],
+      "continuation": "eyJwYWdlIjoxfQ=="
+    }
+  }
+
+INTERPRÉTATION :
+  - type = "bankruptcy" = liquidation
+  - position > 0 → liquidation LONG
+  - position < 0 → liquidation SHORT
+  - session_profit_loss = PnL de la position liquidée
+  - mark_price = prix au moment de la liquidation
+
+STRATÉGIE DE PAGINATION :
+  - Utiliser le champ continuation de la réponse
+  - search_start_timestamp pour cadrer la fenêtre temporelle
+  - Répéter jusqu'à obtenir un tableau vide
+
+LIMITATIONS MAJEURES :
+  1. Uniquement les contrats INVERSE (BTC-PERPETUAL, ETH-PERPETUAL,
+     SOL-PERPETUAL...) — PAS de contrats USDT-M
+  2. Le volume est en contrats inverse (1 contrat = 1 USD), pas
+     directement en token ou USDT
+  3. Les données ne sont pas agrégées par période — il faut agréger
+     soi-même par timeframe
+  4. Couverture limitée aux quelques perpetuals Deribit (bien moins
+     de paires que Binance ou Bybit)
+
+6.3 SOURCE SECONDAIRE : GATE.IO contract_stats (180 jours)
+-----------------------------------------------------------
+Endpoint      : GET /futures/{settle}/contract_stats
+Base URL      : https://api.gateio.ws/api/v4
+Auth          : Aucune
+Dispo depuis  : 180 jours seulement (confirmé par test)
+
+Champs de liquidation :
+  - long_liq_size   : nombre de contrats liquidés long
+  - long_liq_amount : montant en crypto (base)
+  - long_liq_usd    : montant en USDT
+  - short_liq_size  : nombre de contrats liquidés short
+  - short_liq_amount: montant en crypto (base)
+  - short_liq_usd   : montant en USDT
+
+Granularité   : 1m→30d
+Limite/requête: 2000 (max)
+Rate limit    : 300 req/s / IP
+
+UTILITÉ : Excellent pour les 180 jours les plus récents. Les champs
+sont très détaillés (taille + montant + USD). Mais impossible de
+remonter à 2020.
+
+6.4 STRATÉGIE DE COLLECTE CONTINUE (POUR LE FUTUR)
+----------------------------------------------------
+Pour les exchanges qui ne fournissent que du temps réel (Binance, Bybit),
+la seule solution gratuite est de mettre en place un collecteur WebSocket
+qui tourne 24/7 et stocke les liquidations en base de données :
+
+  Binance  : WebSocket <symbol>@forceOrder ou !forceOrder@arr
+  Bybit    : WebSocket allLiquidation.{symbol}
+  OKX      : REST GET /api/v5/public/liquidation-orders (7 jours)
+
+Si cette collecte continue est démarrée, les données s'accumuleront
+progressivement. Mais on ne pourra JAMAIS récupérer les données
+antérieures au démarrage de la collecte.
+
+6.5 SYNTHÈSE LIQUIDATIONS
+---------------------------
+→ Source primaire   : Deribit (BTC/ETH inverse perpetuals seulement)
+→ Source récente    : Gate.io contract_stats (180 jours, USDT-M)
+→ Pour le futur     : Collecte WebSocket continue (Binance + Bybit)
+→ GAP CRITIQUE     : Aucune source gratuite pour les liquidations
+  USDT-M historiques depuis 2020 (BTCUSDT, ETHUSDT, etc.)
+→ Pour combler      : Nécessaire de passer par un service payant
+  (CoinGlass ~29$/mois, Tardis.dev ~100$/mois, ou Coinalyze)
+
+
+================================================================================
+7. MÉTRIQUE 5 : LONG/SHORT RATIO
+================================================================================
+
+7.1 CONSTAT : BINANCE ET OKX INUTILISABLES POUR 2020
+------------------------------------------------------
+  Binance globalLongShortAccountRatio : 30 jours seulement
+  Binance topLongShortPositionRatio   : 30 jours seulement
+  OKX long-short-account-ratio-contract : ~3 mois seulement
+  Bitget long-short / account-long-short : depuis mi-2022 seulement
+  Gate.io : pas d'endpoint dédié (mais lsr_taker/lsr_account dans
+            contract_stats, limité à 180 jours)
+  Deribit : pas d'endpoint
+  BitMEX  : pas d'endpoint
+
+Sources viables depuis 2020 : Bybit + HTX
+
+7.2 SOURCE PRIMAIRE : BYBIT
+-----------------------------
+Endpoint      : GET /v5/market/account-ratio
+Base URL      : https://api.bybit.com
+Auth          : Aucune
+Dispo depuis  : 20 juillet 2020 (documenté officiellement)
+               "The earliest query start time is July 20, 2020"
+Granularité   : 5min, 15min, 30min, 1h, 4h, 1d
+Limite/requête: 500 enregistrements (paramètre limit)
+Rate limit    : 600 req / 5 sec / IP
+
+Paramètres :
+  Nom        Type    Requis  Description
+  ---------  ------  ------  ------------------------------------------
+  category   STRING  Oui     "linear" ou "inverse"
+  symbol     STRING  Oui     Ex: "BTCUSDT"
+  period     STRING  Oui     "5min","15min","30min","1h","4h","1d"
+  startTime  STRING  Non     Timestamp ms (string!)
+  endTime    STRING  Non     Timestamp ms (string!)
+  limit      INTEGER Non     1-500, défaut 50
+  cursor     STRING  Non     Pour pagination
+
+Réponse :
+  {
+    "result": {
+      "list": [
+        {
+          "buyRatio": "0.6622",
+          "sellRatio": "0.3378",
+          "timestamp": "1590019200000"
+        }
+      ],
+      "nextPageCursor": "eyJwYWdlIjoxfQ=="
+    }
+  }
+
+Calcul du ratio long/short :
+  long_short_ratio = buyRatio / sellRatio
+  Exemple : 0.6622 / 0.3378 = 1.96 (plus de longs que de shorts)
+
+STRATÉGIE DE PAGINATION (CURSOR-BASED) :
+  Même principe que l'OI Bybit — utiliser nextPageCursor.
+
+LIMITATION : Les données commencent le 20 juillet 2020. Pour la période
+janvier-juillet 2020, il n'y a aucune source gratuite.
+
+7.3 SOURCE SECONDAIRE : HTX (HOOBI)
+-------------------------------------
+Deux endpoints distincts :
+
+a) Ratio par COMPTES (top traders) :
+   Endpoint : GET /linear-swap-api/v1/swap_elite_account_ratio
+   Réponse  : buy_ratio, sell_ratio, locked_ratio, ts
+
+b) Ratio par POSITIONS (top traders) :
+   Endpoint : GET /linear-swap-api/v1/swap_elite_position_ratio
+   Réponse  : buy_ratio, sell_ratio, ts
+
+Base URL      : https://api.hbdm.com
+Auth          : Aucune
+Dispo depuis  : Octobre 2020 (lancement API USDT-M)
+Granularité   : 5min, 15min, 30min, 60min, 4hour, 1day
+Rate limit    : 240 req / 3 sec
+
+Paramètres :
+  Nom            Type    Requis  Description
+  -------------  ------  ------  ----------------------------------------
+  contract_code  STRING  Oui     Ex: "BTC-USDT"
+  period         STRING  Oui     "5min","15min","30min","60min","4hour","1day"
+
+LIMITATION : Pas de paramètre startTime/endTime sur ces endpoints !
+La pagination se fait uniquement par la période demandée et le nombre
+de points retournés (limité par l'API). Il peut être nécessaire de
+requêter plusieurs fois avec des ajustements manuels.
+
+7.4 SYNTHÈSE LONG/SHORT RATIO
+--------------------------------
+→ Source principale  : Bybit (depuis juil 2020, cursor-based, 5min→1d)
+→ Source secondaire  : HTX (depuis oct 2020, top traders seulement)
+→ Pour validation    : Bitget (depuis mi-2022), Gate.io (180 jours)
+→ GAP               : Aucune source gratuite pour janvier-juillet 2020
+→ Binance/OKX        : Inutilisables (30 jours / 3 mois)
+
+
+================================================================================
+8. ARCHITECTURE DU SYSTÈME DE COLLECTE
+================================================================================
+
+8.1 COMPOSANTS PRINCIPAUX
+---------------------------
+
+  +-------------------+     +-------------+     +------------------+
+  | Scheduler         |────>| Workers     |────>| Storage          |
+  | (orchestration)   |     | (collecte)  |     | (base de données)|
+  +-------------------+     +-------------+     +------------------+
+         |                        |                      |
+         v                        v                      v
+  +-------------------+     +-------------+     +------------------+
+  | Config            |     | Rate Limiter|     | Export/API       |
+  | (pairs, periods)  |     | (par IP)    |     | (query layer)    |
+  +-------------------+     +-------------+     +------------------+
+
+8.2 WORKERS PAR MÉTRIQUE
+--------------------------
+
+WORKER 1 — FUNDING RATE (Binance)
+  Source      : GET https://fapi.binance.com/fapi/v1/fundingRate
+  Pagination  : startTime/endTime, limit=1000
+  Rate limit  : 500 req/5min → ~1.67 req/s
+  Débit estimé: ~8330 enregistrements/5min (1000 * 8.33)
+  Granularité : 8h (3 points/jour/paire)
+  Stockage    : 5 ans × 3 pts/j × 365 × N paires ≈ 5475 × N enregistrements
+
+WORKER 2 — OPEN INTEREST (Bybit)
+  Source      : GET https://api.bybit.com/v5/market/open-interest
+  Pagination  : Cursor-based (nextPageCursor), limit=200
+  Rate limit  : 600 req/5sec → 120 req/s
+  Débit estimé: ~24 000 enregistrements/s
+  Granularité : 5min → 288 pts/jour/paire
+  Stockage    : 5 ans × 288 × 365 × N ≈ 525 600 × N enregistrements
+
+WORKER 3 — TAKER BUY/SELL VOLUME (Binance klines)
+  Source      : GET https://fapi.binance.com/fapi/v1/klines
+  Pagination  : startTime/endTime, limit=1500
+  Rate limit  : 240 weight/min (weight=10 à limit=1500) → 240 req/min
+  Débit estimé: 1500 bougies/req × 240 req/min = 360 000 bougies/min
+  Granularité recommandée : 5m (bon compromis)
+  Calcul      : taker_buy = kline[9], taker_sell = kline[5] - kline[9]
+  Stockage    : 5 ans × 288 × 365 × N ≈ 525 600 × N enregistrements (5m)
+
+WORKER 4 — LIQUIDATIONS (Deribit + Gate.io + collecte WebSocket)
+  Source 1    : GET https://www.deribit.com/api/v2/public/get_last_settlements_by_currency
+               (BTC/ETH inverse seulement, historique complet)
+  Source 2    : GET https://api.gateio.ws/api/v4/futures/usdt/contract_stats
+               (180 jours, USDT-M)
+  Source 3    : WebSocket temps réel (Binance !forceOrder@arr, Bybit allLiquidation)
+  Rate limit  : Deribit ~20 req/s ; Gate.io 300 req/s
+  Stockage    : Variable (événementiel)
+
+WORKER 5 — LONG/SHORT RATIO (Bybit)
+  Source      : GET https://api.bybit.com/v5/market/account-ratio
+  Pagination  : Cursor-based (nextPageCursor), limit=500
+  Rate limit  : 600 req/5sec → 120 req/s
+  Granularité : 5min → 288 pts/jour/paire
+  Stockage    : 5 ans × 288 × 365 × N ≈ 525 600 × N enregistrements
+
+8.3 RATE LIMITER — STRATÉGIE PAR EXCHANGE
+-------------------------------------------
+
+  +------------------+---------------------+------------------+
+  | Exchange         | Limite              | Stratégie        |
+  +------------------+---------------------+------------------+
+  | Binance (fapi)   | 2400 weight/min/IP  | klines: 240/min  |
+  |                  |                     | funding: 500/5min|
+  +------------------+---------------------+------------------+
+  | Bybit            | 600 req/5sec/IP     | 120 req/s max    |
+  |                  |                     | backoff si 403   |
+  +------------------+---------------------+------------------+
+  | Deribit          | ~20 req/s (crédits) | 15 req/s conserv.|
+  +------------------+---------------------+------------------+
+  | Gate.io          | 300 req/s/IP        | 200 req/s conserv|
+  +------------------+---------------------+------------------+
+  | HTX              | 240 req/3sec        | 80 req/s max     |
+  +------------------+---------------------+------------------+
+  | Bitget           | 20 req/s ou 1 req/s | Selon endpoint   |
+  |                  | (big data endpoints)|                  |
+  +------------------+---------------------+------------------+
+  | BitMEX           | 30 req/min (no auth)| 0.5 req/s max    |
+  +------------------+---------------------+------------------+
+
+NOTE IMPORTANTE : Les rate limits sont par adresse IP. Si le système
+tourne sur une seule IP, il faut partager le budget entre tous les
+workers. Solutions :
+  - Utiliser des IPs différentes par worker (rotation)
+  - Séquencer les workers (collecte funding la nuit, OI le jour, etc.)
+  - Prioriser les workers par criticité des données
+
+8.4 GESTION DES ERREURS
+-------------------------
+
+  HTTP 429 (Rate limited)   → Backoff exponentiel (2s, 4s, 8s, 16s, max 60s)
+  HTTP 418 (IP bannie)      → Attendre le délai indiqué (2 min → 3 jours)
+  HTTP 5xx                  → Retry avec jitter (3 tentatives max)
+  Timeout (>10s)            → Retry avec backoff
+  Données vides/invalides   → Logger + skip + continuer
+  Gap détecté               → Requête de comblement + alerter
+
+8.5 MODÈLE DE DONNÉES (STOCKAGE)
+----------------------------------
+
+Table : funding_rate
+  timestamp     BIGINT PK   -- ms timestamp
+  symbol        VARCHAR(20) -- "BTCUSDT"
+  exchange      VARCHAR(10) -- "binance"
+  funding_rate  DECIMAL     -- taux (ex: 0.0001)
+  funding_time  BIGINT      -- heure de settlement
+
+Table : open_interest
+  timestamp     BIGINT PK
+  symbol        VARCHAR(20)
+  exchange      VARCHAR(10)
+  oi_contracts  DECIMAL     -- OI en nombre de contrats
+  oi_notional   DECIMAL     -- OI en valeur notionnelle (USDT)
+  granularity   VARCHAR(5)  -- "5min", "1h", "1d"
+
+Table : taker_volume
+  timestamp         BIGINT PK
+  symbol            VARCHAR(20)
+  exchange          VARCHAR(10)
+  granularity       VARCHAR(5)
+  taker_buy_base    DECIMAL  -- volume taker buy en base asset
+  taker_sell_base   DECIMAL  -- volume taker sell en base asset
+  taker_buy_quote   DECIMAL  -- volume taker buy en quote (USDT)
+  taker_sell_quote  DECIMAL  -- volume taker sell en quote (USDT)
+  source_method     VARCHAR(20) -- "klines_derived" ou "direct"
+
+Table : liquidations
+  timestamp         BIGINT PK
+  symbol            VARCHAR(20)
+  exchange          VARCHAR(10)
+  side              VARCHAR(5)  -- "long" ou "short"
+  size              DECIMAL     -- taille liquidée (contrats)
+  amount            DECIMAL     -- montant en base
+  value_usd         DECIMAL     -- valeur en USDT
+  price             DECIMAL     -- prix de liquidation
+  source_type       VARCHAR(20) -- "bankruptcy", "forceOrder", "contract_stats"
+
+Table : long_short_ratio
+  timestamp         BIGINT PK
+  symbol            VARCHAR(20)
+  exchange          VARCHAR(10)
+  granularity       VARCHAR(5)
+  buy_ratio         DECIMAL  -- ratio de comptes longs (0-1)
+  sell_ratio        DECIMAL  -- ratio de comptes courts (0-1)
+  ls_ratio          DECIMAL  -- buy_ratio / sell_ratio
+  ratio_type        VARCHAR(20) -- "account", "position", "top_account"
+
+
+================================================================================
+9. LIMITES COMMUNES ET STRATÉGIES DE MITIGATION
+================================================================================
+
+9.1 LIMITES PAR EXCHANGE
+--------------------------
+
+BINANCE :
+  ✅ Avantages  : Klines illimités historiquement, funding rate illimité
+  ❌ Inconvénients : OI limité à 1 mois, taker ratio 30 jours,
+                     liquidations = WebSocket temps réel seulement
+  ⚠️ Piège     : L'endpoint /futures/data/* semble historique mais
+                  ne retourne que 30 jours. Ne pas perdre de temps dessus.
+
+BYBIT :
+  ✅ Avantages  : OI depuis 2020, L/S ratio depuis juil 2020,
+                  excellents rate limits (120 req/s)
+  ❌ Inconvénients : Pas d'endpoint taker volume, liquidations = WS seulement
+  ⚠️ Piège     : Le changement de méthodologie OI (bilatéral → unilatéral)
+                  le 11 juin 2026 crée une discontinuité dans les séries.
+                  Les données avant cette date sont ~2x les données après.
+
+GATE.IO :
+  ✅ Avantages  : contract_stats très riche (24 champs !), 300 req/s,
+                  inclut OI + liquidations + taker volume + L/S ratio
+  ❌ Inconvénients : 180 JOURS SEULEMENT (confirmé par test)
+  ⚠️ Piège     : La documentation SDK ne mentionne que 14 champs mais
+                  l'API en retourne 24. Les champs non documentés
+                  (long_taker_size, short_taker_size, lsr_taker, etc.)
+                  sont bien présents et utilisables.
+
+DERIBIT :
+  ✅ Avantages  : Funding rate horaire (unique !), liquidations historiques
+                  (bankruptcy settlements), données depuis 2018
+  ❌ Inconvénients : Peu de paires (BTC/ETH/SOL inverse seulement),
+                  OI = snapshot seulement, pas de L/S ratio
+  ⚠️ Piège     : Le protocole est JSON-RPC 2.0, pas REST classique.
+                  Les paramètres passent dans le query string pour GET.
+
+HTX :
+  ✅ Avantages  : OI historique depuis oct 2020, L/S ratio depuis oct 2020
+  ❌ Inconvénients : API moins documentée, pagination max 50 pour funding,
+                  liquidations limitées à 90 jours
+  ⚠️ Piège     : Les endpoints L/S ratio n'ont pas de startTime/endTime.
+                  Difficile de cibler une période précise.
+
+BITGET :
+  ✅ Avantages  : Endpoints taker-buy-sell et long-short dédiés
+  ❌ Inconvénients : Données depuis mi-2022 seulement, rate limit 1 req/s
+                  sur les endpoints big data, OI = snapshot seulement
+  ⚠️ Piège     : Le rate limit de 1 req/s rend la collecte historique
+                  très lente (potentiellement des heures pour une paire).
+
+OKX :
+  ✅ Avantages  : API bien structurée, endpoints Rubik détaillés
+  ❌ Inconvénients : ~3 mois de profondeur sur quasiment tout,
+                  liquidations = 7 jours seulement
+  ⚠️ Piège     : Les endpoints Rubik n'ont pas de pagination
+                  before/after, juste un limit de 100 points max.
+                  Inutilisable pour du backfill massif.
+
+BITMEX :
+  ✅ Avantages  : Funding rate depuis 2016, trades bucketed historiques
+  ❌ Inconvénients : Rate limit 30 req/min sans auth, peu de paires,
+                  OI = snapshot, pas de L/S ratio, pas de liquidations
+  ⚠️ Piège     : Le rate limit est très bas (0.5 req/s). La collecte
+                  historique est extrêmement lente.
+
+9.2 STRATÉGIES DE MITIGATION COMMUNES
+----------------------------------------
+
+Problème : Rate limit trop bas (BitMEX 30/min, Bitget 1/s)
+Solution : Préférer les exchanges avec de meilleurs rate limits.
+           Ne pas utiliser BitMEX sauf si aucune alternative.
+
+Problème : Pagination cursor-based vs timestamp-based
+Solution : Implémenter les deux modes. Cursor-based (Bybit, Deribit)
+           nécessite de suivre le nextPageCursor. Timestamp-based
+           (Binance, Gate.io) avance le startTime.
+
+Problème : Données manquantes entre exchanges (symboles différents)
+Solution : Maintenir une table de mapping des symboles :
+           BTCUSDT (Binance) ↔ BTCUSDT (Bybit) ↔ BTC-USDT-SWAP (OKX)
+           ↔ BTC-USDT (HTX) ↔ BTC_USDT (Bitget) ↔ BTC-PERPETUAL (Deribit)
+
+Problème : Changements de méthodologie (OI Bybit bilatéral→unilatéral)
+Solution : Stocker la méthode de calcul dans les métadonnées.
+           Appliquer un facteur de conversion lors de l'analyse.
+
+Problème : Timezones et timestamps
+Solution : Toujours utiliser des timestamps Unix en millisecondes (ms).
+           Convertir en UTC pour le stockage. Ne jamais se fier
+           aux dates formatées des API.
+
+
+================================================================================
+10. GAP ANALYSIS — CE QUI EST IMPOSSIBLE GRATUITEMENT
+================================================================================
+
+10.1 GAPS IDENTIFIÉS
+----------------------
+
++-------------------------------+-------------------------------------------+
+| Gap                           | Détail                                    |
++-------------------------------+-------------------------------------------+
+| Liquidations USDT-M           | Aucune source gratuite sans auth depuis   |
+| depuis 2020                   | 2020. Seul Deribit a un historique, mais  |
+| (BTCUSDT, ETHUSDT...)         | en contrats inverse uniquement.           |
++-------------------------------+-------------------------------------------+
+| L/S Ratio avant juil 2020     | Bybit commence le 20/07/2020. Aucune     |
+|                               | source pour jan-juil 2020.               |
++-------------------------------+-------------------------------------------+
+| OI avant mai 2020             | Bybit linear commence en mai 2020.       |
+|                               | HTX commence en oct 2020.               |
+|                               → Pour OI Q1 2020 : aucune source gratuite|
++-------------------------------+-------------------------------------------+
+| Taker volume direct (non      | Tous les endpoints directs sont limités   |
+| dérivé de klines)             | à 30 jours ou 3 mois. La seule source   |
+| depuis 2020                   | depuis 2020 est la reconstruction via    |
+|                               | Binance klines.                          |
++-------------------------------+-------------------------------------------+
+| Liquidations agrégées par     | Deribit fournit du tick-by-tick, pas de  |
+| période (1h, 4h, 1d)         | buckets agrégés. Il faut agréger soi-   |
+| depuis 2020                   | même, ce qui est faisable mais ajoute    |
+|                               | de la complexité.                         |
++-------------------------------+-------------------------------------------+
+| Données sur les altcoins      | La plupart des sources ne couvrent que   |
+| mineurs depuis 2020           | les paires majeures. Les petits          |
+|                               | perpetuals listés après 2022 n'ont pas   |
+|                               | d'historique à 5 ans.                    |
++-------------------------------+-------------------------------------------+
+
+10.2 SOLUTIONS PAYANTES POUR COMBLER LES GAPS
+-----------------------------------------------
+
+Pour les liquidations USDT-M depuis 2020 :
+  → CoinGlass API (~29$/mois) : endpoint liquidation-history
+  → Tardis.dev (~100-300$/mois) : archives WebSocket Binance/Bybit
+  → Coinalyze : API gratuite limitée, plans payants
+
+Pour le L/S ratio pré-juil 2020 :
+  → Aucun fournisseur identifié avec cette donnée historique
+
+Pour l'OI pré-mai 2020 :
+  → Binance Data Vision (data.binance.vision) : snapshots OI
+    disponibles en CSV mais non en temps réel
+
+10.3 MATRICE DE COMPLÉTUDE FINALE
+------------------------------------
+
+Pour chaque métrique et chaque année, le pourcentage de données
+récupérable GRATUITEMENT sans auth :
+
+                    2020-H1  2020-H2  2021    2022    2023    2024    2025-26
+Funding Rate        95%     100%    100%    100%    100%    100%    100%
+Open Interest        0%     60%     100%    100%    100%    100%    100%
+Taker Buy/Sell      100%*   100%*   100%*   100%*   100%*   100%*   100%*
+Liquidations (inv)  100%    100%    100%    100%    100%    100%    100%
+Liquidations (USDT)  0%      0%      0%      0%      0%      0%      0%
+L/S Ratio            0%     60%     100%    100%    100%    100%    100%
+
+* Taker Buy/Sell via reconstruction Binance klines (calcul dérivé)
+  Liquidations (inv) = contrats inverse Deribit seulement (BTC/ETH)
+  Liquidations (USDT) = AUCUNE source gratuite historique
+
+
+================================================================================
+11. ANNEXES — ENDPOINTS COMPLETS PAR EXCHANGE
+================================================================================
+
+11.1 BINANCE — ENDPOINTS UTILISÉS
+-----------------------------------
+
+  # Funding Rate historique
+  GET https://fapi.binance.com/fapi/v1/fundingRate
+    ?symbol=BTCUSDT
+    &startTime=1577836800000
+    &limit=1000
+
+  # Klines (pour taker volume)
+  GET https://fapi.binance.com/fapi/v1/klines
+    ?symbol=BTCUSDT
+    &interval=5m
+    &startTime=1577836800000
+    &limit=1500
+
+  # Funding Rate actuel (vérification)
+  GET https://fapi.binance.com/fapi/v1/fundingInfo
+    ?symbol=BTCUSDT
+
+11.2 BYBIT — ENDPOINTS UTILISÉS
+---------------------------------
+
+  # Open Interest historique
+  GET https://api.bybit.com/v5/market/open-interest
+    ?category=linear
+    &symbol=BTCUSDT
+    &intervalTime=1h
+    &limit=200
+
+  # Long/Short Ratio
+  GET https://api.bybit.com/v5/market/account-ratio
+    ?category=linear
+    &symbol=BTCUSDT
+    &period=1h
+    &limit=500
+
+  # Funding Rate historique (fallback)
+  GET https://api.bybit.com/v5/market/funding/history
+    ?category=linear
+    &symbol=BTCUSDT
+    &limit=200
+
+11.3 DERIBIT — ENDPOINTS UTILISÉS
+-----------------------------------
+
+  # Funding Rate historique (horaire)
+  GET https://www.deribit.com/api/v2/public/get_funding_rate_history
+    ?instrument_name=BTC-PERPETUAL
+    &start_timestamp=1577836800000
+
+  # Liquidations (bankruptcy settlements)
+  GET https://www.deribit.com/api/v2/public/get_last_settlements_by_currency
+    ?currency=BTC
+    &type=bankruptcy
+    &count=100
+
+11.4 GATE.IO — ENDPOINTS UTILISÉS
+-----------------------------------
+
+  # Contract Stats (OI + liquidations + taker + L/S ratio, 180 jours)
+  GET https://api.gateio.ws/api/v4/futures/usdt/contract_stats
+    ?contract=BTC_USDT
+    &interval=1h
+    &limit=2000
+
+  # Funding Rate (à vérifier la profondeur)
+  GET https://api.gateio.ws/api/v4/futures/usdt/funding_rate
+    ?contract=BTC_USDT
+    &limit=1000
+
+11.5 HTX — ENDPOINTS UTILISÉS
+-------------------------------
+
+  # Open Interest historique
+  GET https://api.hbdm.com/linear-swap-api/v1/swap_his_open_interest
+    ?contract_code=BTC-USDT
+    &period=60min
+    &size=200
+
+  # Long/Short Ratio (comptes top traders)
+  GET https://api.hbdm.com/linear-swap-api/v1/swap_elite_account_ratio
+    ?contract_code=BTC-USDT
+    &period=60min
+
+  # Long/Short Ratio (positions top traders)
+  GET https://api.hbdm.com/linear-swap-api/v1/swap_elite_position_ratio
+    ?contract_code=BTC-USDT
+    &period=60min
+
+  # Funding Rate historique (fallback)
+  GET https://api.hbdm.com/linear-swap-api/v1/swap_historical_funding_rate
+    ?contract_code=BTC-USDT
+    &page_size=50
+
+11.6 BITGET — ENDPOINTS UTILISÉS
+----------------------------------
+
+  # Taker Buy/Sell Volume (depuis mi-2022)
+  GET https://api.bitget.com/api/v2/mix/market/taker-buy-sell
+    ?symbol=BTCUSDT
+    &productType=USDT-FUTURES
+    &period=1h
+
+  # Long/Short Ratio (depuis mi-2022)
+  GET https://api.bitget.com/api/v2/mix/market/long-short
+    ?symbol=BTCUSDT
+    &productType=USDT-FUTURES
+    &period=1h
+
+  # Funding Rate historique (fallback)
+  GET https://api.bitget.com/api/v2/mix/market/history-fund-rate
+    ?symbol=BTCUSDT
+    &productType=USDT-FUTURES
+    &pageSize=100
+
+11.7 BITMEX — ENDPOINTS UTILISÉS
+----------------------------------
+
+  # Funding Rate historique
+  GET https://www.bitmex.com/api/v1/funding
+    ?symbol=XBTUSD
+    &count=500
+    &startTime=2020-01-01
+
+  # Trades bucketed (pour taker volume, fallback)
+  GET https://www.bitmex.com/api/v1/trade/bucketed
+    ?symbol=XBTUSD
+    &binSize=1h
+    &count=500
+    &startTime=2020-01-01
+
+
+================================================================================
+FIN DU DOCUMENT
+================================================================================
