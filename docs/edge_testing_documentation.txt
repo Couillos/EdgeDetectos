@@ -1,0 +1,551 @@
+===============================================================================
+EDGE TESTING REPORT GENERATION - COMPLETE DOCUMENTATION
+===============================================================================
+BTC/USDT 1H | 2020-2026 | Mean Reversion Signals
+===============================================================================
+
+
+===============================================================================
+1. REPORT STRUCTURE (6 rows x 3 cols = 15 panels per signal)
+===============================================================================
+
+Row 1, Col 1: Mean Forward Return by Horizon (bar chart)
+Row 1, Col 2: Winrate by Horizon (bar chart)
+Row 1, Col 3: Statistical Significance Matrix (heatmap)
+
+Row 2, Col 1: Return Distribution Signal vs All 24h (overlaid histogram)
+Row 2, Col 2: Monte Carlo vs Signal 24h (histogram)
+Row 2, Col 3: Sharpe-like Ratio by Horizon (bar chart)
+
+Row 3, Col 1: Rolling Edge Decay 24h Mean Return (time bar chart)
+Row 3, Col 2: Rolling Winrate 24h (time bar chart)
+Row 3, Col 3: Year-by-Year Performance (bar + line twin axis)
+
+Row 4, Cols 1-2: Cumulative PnL (step plot with fill)
+Row 4, Col 3: Volatility Regime Analysis (bar chart)
+
+Row 5, Col 1: Tail Analysis P5/P95 by Horizon (grouped bar chart)
+Row 5, Col 2: Return Skewness by Horizon (bar chart)
+Row 5, Col 3: Return Distribution Signal vs All 1h (overlaid histogram)
+
+Row 6 (full width): Conclusion / Summary Table (formatted text box)
+
+
+===============================================================================
+2. DATA PIPELINE
+===============================================================================
+
+# 1. Download candles with ccxt
+import ccxt, pandas as pd, numpy as np
+from scipy import stats
+
+exchange = ccxt.binance()
+all_ohlcv = []
+since = exchange.parse8601('2020-01-01T00:00:00Z')
+
+while since < exchange.milliseconds():
+    batch = exchange.fetch_ohlcv('BTC/USDT', '1h', since, limit=1000)
+    if not batch:
+        break
+    all_ohlcv.extend(batch)
+    since = batch[-1][0] + 1  # +1ms to avoid duplicates
+
+df = pd.DataFrame(all_ohlcv, columns=['timestamp','open','high','low','close','volume'])
+df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+df.set_index('datetime', inplace=True)
+df.drop(columns=['timestamp'], inplace=True)
+df = df[~df.index.duplicated(keep='first')]
+
+
+# 2. Forward returns at multiple horizons
+for h in [1, 4, 6, 12, 24, 48, 72, 168]:
+    df[f'fwd_{h}h'] = (df['close'].shift(-h) - df['close']) / df['close'] * 100
+
+
+# 3. Define signal (example: drop > 2% in 6h)
+df['signal'] = (df['close'] < df['close'].shift(6) * 0.98).astype(int)
+
+
+# 4. Extract signal and all-entry returns
+signal_rets = df.loc[df['signal']==1, 'fwd_24h'].dropna()
+all_rets = df['fwd_24h'].iloc[:-24].dropna()  # exclude last 24 rows (no forward data)
+
+
+===============================================================================
+3. STATISTICAL TESTS
+===============================================================================
+
+--- 3a. T-TEST (is mean significantly different from 0?) ---
+from scipy import stats
+
+t_stat, t_p = stats.ttest_1samp(signal_rets, 0)
+# t_p < 0.05 => mean is significantly > 0 (or < 0)
+# t_p < 0.001 => highly significant
+
+
+--- 3b. BOOTSTRAP CONFIDENCE INTERVALS ---
+def bootstrap_ci(data, n_boot=1000):
+    """Resample with replacement, compute mean each time, return 95% CI"""
+    boot_means = []
+    for _ in range(n_boot):
+        sample = np.random.choice(data, size=len(data), replace=True)
+        boot_means.append(np.mean(sample))
+    return [np.percentile(boot_means, 2.5), np.percentile(boot_means, 97.5)]
+
+ci = bootstrap_ci(signal_rets.values)
+# If ci[0] > 0: edge is robust (even worst-case resampled mean is positive)
+
+
+--- 3c. MONTE CARLO PERMUTATION TEST ---
+np.random.seed(42)
+n = len(signal_rets)  # same number of entries as the signal
+
+mc_means = []
+for _ in range(1000):  # 1000 iterations (use 5000-10000 for more precision)
+    # Pick N random entries from ALL possible entries (not just signal entries)
+    random_sample = np.random.choice(all_rets, size=n, replace=False)
+    mc_means.append(np.mean(random_sample))
+
+mc_p = (np.array(mc_means) >= signal_rets.mean()).mean()
+# mc_p < 0.05 => signal mean beats 95%+ of random entry combinations
+# mc_p = 0.001 => signal is in the top 0.1% — very strong evidence
+
+
+--- 3d. KOLMOGOROV-SMIRNOV TEST ---
+ks_stat, ks_p = stats.ks_2samp(signal_rets, all_rets)
+# Tests if the TWO DISTRIBUTIONS are different (not just the means)
+# ks_p < 0.05 => signal captures a genuinely different distribution of returns
+# A significant KS with non-significant t-test means the distributions differ
+#   in shape (variance, skewness, tails) even if means are similar
+
+
+===============================================================================
+4. EDGE PERSISTENCE TESTS
+===============================================================================
+
+--- 4a. ROLLING WINDOW ANALYSIS (most important for "does edge still exist?") ---
+# Window: 5040 candles (7 months on 1h), Step: 720 (1 month)
+
+rolling_results = []
+for start in range(0, len(df) - 5040, 720):
+    sub = df.iloc[start:start+5040]
+    sr = sub.loc[sub['signal']==1, 'fwd_24h'].dropna()
+    if len(sr) > 20:
+        rolling_results.append({
+            'date': sub.index[-1],
+            'mean': sr.mean(),
+            'winrate': (sr > 0).mean() * 100,
+            'count': len(sr),
+            'sharpe': sr.mean() / sr.std() if sr.std() > 0 else 0
+        })
+
+rolling_df = pd.DataFrame(rolling_results)
+# Key metrics:
+#   - % of windows with positive mean (should be > 65%)
+#   - Is the rolling mean declining over time? (edge decay)
+#   - Plot as bar chart with green/red bars
+
+
+--- 4b. YEAR-BY-YEAR SIGNIFICANCE ---
+# T-test each year separately — edge must survive in most years
+
+df['year'] = df.index.year
+yearly = []
+for year, grp in df.groupby('year'):
+    sr = grp.loc[grp['signal']==1, 'fwd_24h'].dropna()
+    if len(sr) > 5:
+        t_stat, t_p = stats.ttest_1samp(sr, 0)
+        yearly.append({
+            'year': year,
+            'n': len(sr),
+            'mean': sr.mean(),
+            'winrate': (sr > 0).mean() * 100,
+            'p_value': t_p,
+            'sharpe': sr.mean() / sr.std() if sr.std() > 0 else 0
+        })
+
+yearly_df = pd.DataFrame(yearly)
+# Count how many years have p < 0.05
+
+
+--- 4c. VOLATILITY REGIME ANALYSIS ---
+# Check if edge works differently in high/low volatility
+
+df['realized_vol_24h'] = df['close'].pct_change().rolling(24).std() * np.sqrt(24) * 100
+df['vol_regime'] = pd.qcut(df['realized_vol_24h'], 3, labels=['Low', 'Mid', 'High'])
+
+regime_results = []
+for regime, grp in df.groupby('vol_regime'):
+    sr = grp.loc[grp['signal']==1, 'fwd_24h'].dropna()
+    ar = grp['fwd_24h'].dropna()  # all entries in this regime
+    if len(sr) > 10:
+        t_stat, t_p = stats.ttest_1samp(sr, 0)
+        excess = sr.mean() - ar.mean()  # excess return vs random in same regime
+        regime_results.append({
+            'regime': regime,
+            'n': len(sr),
+            'mean': sr.mean(),
+            'excess_vs_random': excess,
+            'winrate': (sr > 0).mean() * 100,
+            'p_value': t_p
+        })
+
+
+===============================================================================
+5. CHART SPECIFICATIONS (detailed)
+===============================================================================
+
+--- THEME COLORS ---
+Background:      #0D1117
+Panel:           #161B22
+Text:            #C9D1D9
+Accent/Blue:     #58A6FF
+Green:           #3FB950
+Red:             #F85149
+Yellow:          #D29922
+Purple:          #BC8CFF
+Grid lines:      #21262D
+Signal color:    #00D4AA
+All entries:     #FF6B6B
+
+Font: DejaVu Sans, dpi=150
+Figure size: 24x32 inches (individual reports), 28x44 (original with quantile)
+GridSpec: 6 rows x 3 cols, hspace=0.38, wspace=0.28
+
+
+--- PANEL 1: Mean Forward Return by Horizon ---
+Type: Bar chart with error bars
+X: horizons [1h, 4h, 6h, 12h, 24h, 48h, 72h, 168h]
+Y: mean forward return (%) for signal entries
+Error bars: bootstrap 95% CI
+Colors: green if mean > 0, red if < 0
+Labels: value above each bar like "+0.440%"
+Horizontal line at y=0 (grid color)
+
+ax.bar(range(len(horizons)), means, color=colors, alpha=0.8, width=0.6)
+ax.errorbar(range(len(horizons)), means,
+            yerr=[[mean - ci_low], [ci_high - mean]],
+            fmt='none', color=text_color, capsize=3)
+
+
+--- PANEL 2: Winrate by Horizon ---
+Type: Bar chart
+X: same horizons
+Y: (signal_returns > 0).mean() * 100
+Horizontal dashed line at 50% (yellow, label "50% baseline")
+Colors: green if > 50%, red if < 50%
+Labels: "55.1%" above each bar
+
+
+--- PANEL 3: Statistical Significance Matrix ---
+Type: Seaborn heatmap
+3 rows: [T-test p, KS test p, MC p-val]
+Columns: [1h, 4h, 6h, 12h, 24h, 48h, 72h, 168h]
+Values: -log10(p_value)  — higher = more significant
+Colormap: RdYlGn (red=not significant, green=very significant)
+Annotated with values (1 decimal)
+cbar label: "-log10(p)"
+
+import seaborn as sns
+matrix = np.array([
+    [t_p_1h, t_p_4h, ...],
+    [ks_p_1h, ks_p_4h, ...],
+    [mc_p_1h, mc_p_4h, ...]
+])
+sns.heatmap(-np.log10(matrix + 1e-10), cmap='RdYlGn', annot=True, fmt='.1f')
+
+
+--- PANEL 4: Distribution Signal vs All (24h) ---
+Type: Overlaid density histogram
+Bins: np.linspace(-15, 15, 80)
+Red (alpha=0.35): all forward 24h returns (all candles except last 24)
+Green (alpha=0.5): signal forward 24h returns
+Vertical yellow dashed line at x=0
+Vertical green solid line at signal mean, label: "Signal mean: +0.440%"
+Legend: upper right
+
+
+--- PANEL 5: Monte Carlo vs Signal (24h) ---
+Type: Histogram of random means + vertical lines
+Histogram: 1000 random means (red, alpha=0.5, density=True)
+Vertical red dashed line: mean of random means
+Vertical green solid line: signal mean (thicker, linewidth=2.5)
+Text box top-right: "MC p=0.0000" (green if <0.05, red otherwise, bold)
+Legend: upper left
+
+np.random.seed(42)  # IMPORTANT: fixed seed for reproducibility
+
+
+--- PANEL 6: Sharpe-like Ratio by Horizon ---
+Type: Bar chart
+X: horizons
+Y: mean / std for signal returns at each horizon
+Green if > 0, red if < 0
+Labels: "0.0452" above each bar
+
+
+--- PANEL 7: Rolling Edge Decay (24h Mean) ---
+Type: Time bar chart
+X: date (end of each rolling window)
+Y: mean 24h forward return in that window
+Bar width: 25 (in matplotlib date units)
+Colors: green if mean > 0, red if < 0
+Horizontal yellow dashed line at y=0
+Horizontal blue line: overall average
+Yellow line: 5-period moving average of the rolling means
+Legend: best
+
+This is THE MOST IMPORTANT chart for edge persistence.
+If bars turn mostly red in recent windows, the edge is dying.
+
+
+--- PANEL 8: Rolling Winrate (24h) ---
+Same structure as panel 7, but Y = winrate %
+Yellow dashed line at 50%
+Blue line: average winrate
+Yellow line: 5-period MA
+
+
+--- PANEL 9: Year-by-Year Performance ---
+Type: Bar chart + twin axis line
+Bars: mean 24h return by year (green/red)
+Twin axis (right): line with circle markers = winrate by year (blue)
+Labels above each bar: mean value, N signals, p-value, *** if p<0.05
+Horizontal gray line at y=0
+Twin axis: horizontal yellow dashed at 50%
+
+
+--- PANEL 10-11: Cumulative PnL (spans 2 columns) ---
+Type: Step plot with filled areas
+X: date of each signal
+Y: cumulative sum of 24h forward returns (in chronological order)
+
+# Calculate:
+signal_rets = df.loc[df['signal']==1, 'fwd_24h'].dropna()
+cum = np.cumsum(signal_rets.values)
+
+plt.step(dates, cum, where='post', color=blue)
+plt.fill_between(dates, 0, cum, where=(cum>=0), color=green, alpha=0.3, step='post')
+plt.fill_between(dates, 0, cum, where=(cum<0), color=red, alpha=0.3, step='post')
+Horizontal yellow line at y=0
+Text: "Total: +XXX.XX%" (green if positive, red otherwise, bold, top-left)
+
+
+--- PANEL 12: Volatility Regime Analysis ---
+Type: Bar chart + twin axis
+Bars (width=0.4): mean 24h return by vol regime (green/red)
+Labels: mean%, N, p-value
+Twin axis bars (width=0.4, offset by +0.4): excess vs random (purple, alpha=0.5)
+X labels: ['Low', 'Mid', 'High']
+
+
+--- PANEL 13: Tail Analysis P5/P95 ---
+Type: Grouped bar chart
+For each horizon, two bars side by side:
+  - Left (red, width=0.3, offset -0.15): percentile 5
+  - Right (green, width=0.3, offset +0.15): percentile 95
+
+np.percentile(signal_rets, 5)  # worst 5% outcome
+np.percentile(signal_rets, 95)  # best 5% outcome
+
+
+--- PANEL 14: Skewness by Horizon ---
+Type: Bar chart
+X: horizons
+Y: skewness of signal returns (pd.Series.skew())
+Green if > 0 (right tail = more big gains)
+Red if < 0 (left tail = more big losses)
+
+
+--- PANEL 15: Distribution Signal vs All (1h) ---
+Same as Panel 4 but for 1h forward returns
+Bins: np.linspace(-4, 4, 60) or dynamic based on percentiles
+
+
+--- PANEL 16 (Row 6, full width): CONCLUSION BOX ---
+Type: Formatted text in monospace
+
+Verdict logic:
+  3/3 tests significant (p<0.05) => "STRONG EDGE DETECTED" (green border)
+  2/3 => "MODERATE EDGE" (yellow border)
+  1/3 => "WEAK EDGE" (yellow border)
+  0/3 => "NO SIGNIFICANT EDGE" (red border)
+
+Content includes:
+  - Signal type (Price Action / Indicator)
+  - Total signals count and % of all candles
+  - 24h mean, median, winrate, std, sharpe, 95% CI
+  - All 3 test p-values with significance markers
+  - Rolling % positive, years positive, years significant
+  - Best horizon
+  - Caveats: costs not included, slippage not included
+
+
+===============================================================================
+6. AXES STYLING FUNCTION
+===============================================================================
+
+def style_ax(ax, title='', xlabel='', ylabel=''):
+    ax.set_facecolor('#161B22')
+    ax.tick_params(colors='#C9D1D9', labelsize=7)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_color('#21262D')
+    ax.spines['left'].set_color('#21262D')
+    if title:
+        ax.set_title(title, color='#58A6FF', fontsize=11, fontweight='bold', pad=6)
+    if xlabel:
+        ax.set_xlabel(xlabel, color='#C9D1D9', fontsize=8)
+    if ylabel:
+        ax.set_ylabel(ylabel, color='#C9D1D9', fontsize=8)
+
+# Figure
+fig = plt.figure(figsize=(24, 32), facecolor='#0D1117')
+gs = gridspec.GridSpec(6, 3, figure=fig, left=0.06, right=0.96, top=0.984,
+                       bottom=0.01, hspace=0.38, wspace=0.28)
+
+
+===============================================================================
+7. 10 SIGNALS TESTED
+===============================================================================
+
+--- PRICE ACTION (no indicators) ---
+
+Signal 1: Drop >2% in 6h
+  df['signal'] = (df['close'] < df['close'].shift(6) * 0.98).astype(int)
+  Result: STRONG EDGE 3/3 *** | +0.440% 24h | WR 57.1% | Rolling 84%
+
+Signal 2: 3 Consecutive Red Candles
+  red = (df['close'] < df['open']).astype(int)
+  consec = np.zeros(len(df))
+  for i in range(1, len(df)):
+      consec[i] = (consec[i-1] + 1) * red[i] if red[i] else 0
+  df['signal'] = (consec >= 3).astype(int)
+  Result: NO EDGE 0/3 | +0.088% 24h | WR 53.2% | Rolling 65%
+
+Signal 3: Price < Low_24h_ago
+  df['signal'] = (df['close'] < df['low'].shift(24)).astype(int)
+  Result: STRONG EDGE 3/3 *** | +0.151% 24h | WR 55.1% | Rolling 75%
+
+Signal 4: Biggest Red Candle >1.5% in 12h -> long next bar
+  body_pct = (df['close'] - df['open']) / df['open'] * 100
+  body_prev = body_pct.shift(1)
+  rolling_min_body = body_pct.rolling(12).min().shift(1)
+  df['signal'] = ((body_prev < -1.5) &
+                   (abs(body_prev) >= abs(rolling_min_body.fillna(0)))).astype(int)
+  Result: STRONG EDGE 3/3 *** | +0.358% 24h | WR 56.6% | Rolling 76%
+
+Signal 5: Drop >3% in 24h
+  df['signal'] = (df['close'] < df['close'].shift(24) * 0.97).astype(int)
+  Result: STRONG EDGE 3/3 *** | +0.369% 24h | WR 56.6% | Rolling 83%
+
+
+--- INDICATOR BASED ---
+
+Signal 6: RSI(14) < 30
+  delta = df['close'].diff()
+  gain = delta.where(delta > 0, 0.0)
+  loss = (-delta).where(delta < 0, 0.0)
+  avg_gain = gain.ewm(com=13, min_periods=14).mean()
+  avg_loss = loss.ewm(com=13, min_periods=14).mean()
+  rs = avg_gain / avg_loss.replace(0, np.nan)
+  df['rsi'] = 100 - (100 / (1 + rs))
+  df['signal'] = (df['rsi'] < 30).astype(int)
+  Result: NO EDGE (NEGATIVE) | -0.121% 24h | WR 50.8% | MC p=0.997
+
+Signal 7: Close < Bollinger Band Lower (20, 2)
+  bb_mid = df['close'].rolling(20).mean()
+  bb_std = df['close'].rolling(20).std()
+  bb_lower = bb_mid - 2 * bb_std
+  df['signal'] = (df['close'] < bb_lower).astype(int)
+  Result: WEAK EDGE 1/3 | +0.072% 24h | WR 54.0% | Rolling 61%
+
+Signal 8: Price < EMA(50h) - 2%
+  ema50 = df['close'].ewm(span=50, adjust=False).mean()
+  df['signal'] = (df['close'] < ema50 * 0.98).astype(int)
+  Result: STRONG EDGE 3/3 *** | +0.241% 24h | WR 56.0% | Rolling 84%
+
+Signal 9: MACD Histogram Cross Above 0
+  ema12 = df['close'].ewm(span=12, adjust=False).mean()
+  ema26 = df['close'].ewm(span=26, adjust=False).mean()
+  macd = ema12 - ema26
+  macd_signal = macd.ewm(span=9, adjust=False).mean()
+  macd_hist = macd - macd_signal
+  df['signal'] = ((macd_hist > 0) & (macd_hist.shift(1) <= 0)).astype(int)
+  Result: WEAK EDGE 1/3 | +0.214% 24h | WR 51.5% | Rolling 73%
+
+Signal 10: Stochastic RSI < 20
+  rsi_series = df['rsi'].dropna()
+  stoch_rsi = ((rsi_series - rsi_series.rolling(14).min()) /
+               (rsi_series.rolling(14).max() - rsi_series.rolling(14).min()) * 100)
+  df['stoch_rsi'] = stoch_rsi
+  df['signal'] = (df['stoch_rsi'] < 20).astype(int)
+  Result: MODERATE EDGE 2/3 ** | +0.121% 24h | WR 53.6% | Rolling 76%
+
+
+===============================================================================
+8. COMPARISON TABLE (24h horizon summary)
+===============================================================================
+
+ # Signal                 Type           N      Mean24h    WR     T-p      MC-p   Roll+  Edge
+----------------------------------------------------------------------------------------------------
+ 1 Drop>2%_6h             Price Action   3588   +0.4404   57.1   0.0000   0.0000   84%   3/3 ***
+ 2 3RedCandles            Price Action   5601   +0.0877   53.2   0.0674   0.6460   65%   0/3
+ 3 Price<Low24h           Price Action  22669   +0.1514   55.1   0.0000   0.0070   75%   3/3 ***
+ 4 BigRed>1.5%            Price Action    772   +0.3583   56.6   0.0213   0.0210   76%   3/3 ***
+ 5 Drop>3%_24h            Price Action   6046   +0.3685   56.6   0.0000   0.0000   83%   3/3 ***
+ 6 RSI<30                 Indicator      2666   -0.1212   50.8   0.1019   0.9970   47%   0/3
+ 7 BB_Lower               Indicator      3210   +0.0716   54.0   0.2557   0.7280   61%   1/3
+ 8 EMA50-2%               Indicator      6539   +0.2409   56.0   0.0000   0.0010   84%   3/3 ***
+ 9 MACD_Cross             Indicator      2154   +0.2138   51.5   0.0024   0.0790   73%   1/3
+10 StochRSI<20            Indicator     15003   +0.1207   53.6   0.0000   0.2750   76%   2/3 **
+
+
+===============================================================================
+9. REQUIRED PYTHON PACKAGES
+===============================================================================
+
+pip install ccxt pandas numpy scipy matplotlib seaborn
+
+ccxt         - Exchange API for downloading candles
+pandas       - Data manipulation
+numpy        - Numerical computation
+scipy        - Statistical tests (ttest, ks_2samp)
+matplotlib   - Chart generation
+seaborn      - Heatmaps
+
+
+===============================================================================
+10. KEY NOTES
+===============================================================================
+
+- All forward returns use CLOSE prices (not high/low). In real trading you
+  would enter at market (close) and exit at market (close T+H).
+
+- Transaction costs are NOT included. Binance maker fee ~0.1%, taker ~0.1%.
+  Round trip = ~0.2%. So for 1h horizon (+0.02% edge), the edge is dead
+  after costs. For 24h (+0.26-0.44%), it survives but is reduced.
+
+- Slippage is NOT included. In volatile conditions (which these signals
+  often trigger in), slippage can be 0.05-0.2% per side.
+
+- The Monte Carlo p-value answers: "If I entered at N random times,
+  what fraction would have a higher mean return than my signal?"
+  Lower = better. p=0.001 means top 0.1%.
+
+- The KS test answers: "Are the return DISTRIBUTIONS fundamentally
+  different?" Even if means are similar, different shapes indicate
+  the signal captures unique information.
+
+- Bootstrap CI answers: "Given the observed sample, what's the range
+  of plausible true mean values?" If the 95% CI excludes 0, the
+  edge is robust to sampling variability.
+
+- Rolling window analysis is THE key test for edge persistence.
+  An edge that worked in 2021 but not 2024-2026 is not reliable.
+  Look for >70% of windows positive and no clear downward trend.
+
+- np.random.seed(42) is set before each Monte Carlo for reproducibility.
+
+- The "all returns" baseline (for KS and MC) excludes the last H candles
+  because those don't have forward data: df['fwd_24h'].iloc[:-24]

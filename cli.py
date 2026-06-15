@@ -16,7 +16,7 @@ matplotlib.use('Agg')
 from edge_registry import Edge, register_edge, get_edge, list_edges, _registry, ConditionFn
 from bt_engine.data import load_data, register_example_edges, load_user_edges
 from bt_engine.engine import BacktestEngine, generate_legacy_report, generate_edge_report
-from bt_engine.worker import _mp_run_edge
+from bt_engine.worker import _mp_run_edge, set_shared_df
 from analysis.ranking import generate_ranking
 from analysis.report import analyze_edge
 from engine.evaluator import generate_edge_file, list_indicators
@@ -48,6 +48,7 @@ def main():
     parser.add_argument("--short", type=str, default=None, help="Short entry formula (for --create-edge)")
     parser.add_argument("--horizons", type=str, default=None, help="Close horizons (comma-separated, for --create-edge)")
     parser.add_argument("--desc", type=str, default='', help="Edge description (for --create-edge)")
+    parser.add_argument("--force", action="store_true", help="Force re-run even if analysis.json exists")
     parser.add_argument("--quick", action="store_true", help="Skip chart generation (JSON only)")
     args = parser.parse_args()
 
@@ -95,7 +96,7 @@ def main():
         df = compute_forward_returns(df, [1, 4, 6, 12, 24, 48, 72, 168])
         bt_path = str(Path(__file__).resolve())
         sm_path = str(Path(f'/tmp/edge_analysis/source_map_{args.symbol.replace("/", "_")}.json'))
-        results = validator.validate_all(df, sym_dir, bt_path, sm_path, n_workers=os.cpu_count(), quick=True)
+        results = validator.validate_all(df, sym_dir, bt_path, sm_path, n_workers=12, quick=True)
         out_stem = f'oos_{args.symbol.replace("/", "_")}'
         validator.generate_summary(results, args.symbol, output_path=f'{out_stem}.txt')
         validator.save_csv(results, output_path=f'{out_stem}.csv')
@@ -166,11 +167,13 @@ def main():
         edge_names = [e.name for e in edges]
         bt_path = str(Path(__file__).resolve())
 
-        n_workers = os.cpu_count() or 4
+        from bt_engine.worker import _optimal_workers
+        n_workers = _optimal_workers(df, max_workers=os.cpu_count(), quick=args.quick)
+        set_shared_df(df)
         print(f"[analyze] Starting {len(edges)} edges with {n_workers} workers...")
         t0 = time.time()
-        with Pool(n_workers) as pool:
-            args_list = [(name, df_parquet, sm_path, args.quick, bt_path, REPORTS_DIR)
+        with Pool(n_workers, maxtasksperchild=1) as pool:
+            args_list = [(name, df_parquet, sm_path, args.quick, bt_path, REPORTS_DIR, args.force)
                          for name in edge_names]
             for i, result in enumerate(pool.imap_unordered(_mp_run_edge, args_list), 1):
                 elapsed = time.time() - t0

@@ -256,7 +256,6 @@ def analyze_signal(df: pd.DataFrame, signal_col: str,
                     best_h = h
 
     return {
-        'df': df,
         'signal_col': signal_col,
         'horizon_stats': horizon_stats,
         'rolling': rolling,

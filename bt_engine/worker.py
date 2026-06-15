@@ -5,7 +5,7 @@ Memory optimisation: on Linux with `fork`, workers inherit the parent's memory.
 Use `set_shared_df(df)` in the parent BEFORE spawning workers to avoid each
 worker reloading the full dataframe from parquet.
 """
-import json, os, sys, re, logging, warnings
+import json, os, sys, re, logging, time
 from pathlib import Path
 from typing import Optional
 import pandas as pd
@@ -17,53 +17,77 @@ _SHARED_DF: Optional[pd.DataFrame] = None
 
 
 def set_shared_df(df: pd.DataFrame):
-    """Set the DataFrame to be shared across forked worker processes.
-    Call this in the parent process BEFORE spawning worker processes.
-    Workers inherit the reference via fork copy-on-write (no memory copy)."""
     global _SHARED_DF
     _SHARED_DF = df
+
+
+# ── Memory logging ────────────────────────────────────────────────────
+
+_log_dir = Path(__file__).parent.parent / 'logs'
+_log_dir.mkdir(parents=True, exist_ok=True)
+
+_memory_logger = logging.getLogger('worker_memory')
+_memory_logger.setLevel(logging.INFO)
+_memory_logger.handlers.clear()
+_mh = logging.FileHandler(str(_log_dir / 'memory.log'), encoding='utf-8')
+_mh.setFormatter(logging.Formatter('%(asctime)s [MEM] %(message)s'))
+_memory_logger.addHandler(_mh)
+
+
+def _rss_mb() -> float:
+    try:
+        import psutil
+        return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+    except Exception:
+        return 0.0
+
+
+def _log_mem(edge_name: str, phase: str, extra: str = ''):
+    mem = _rss_mb()
+    _memory_logger.info(f"{edge_name:40s} | PID={os.getpid():5d} | {phase:10s} | RSS={mem:8.1f}MB {extra}")
 
 
 # ── Worker count capped by available memory ───────────────────────────
 
 def _available_memory_mb() -> float:
-    """Return available RAM in MB."""
     try:
         import psutil
         return psutil.virtual_memory().available / (1024 * 1024)
     except Exception:
         pass
-    # Fallback: read /proc/meminfo on Linux
     try:
         with open('/proc/meminfo') as f:
             for line in f:
                 if line.startswith('MemAvailable:'):
                     return float(line.split()[1]) / 1024
-                if line.startswith('MemFree:'):
-                    return float(line.split()[1]) / 1024
     except Exception:
         pass
-    return 64 * 1024  # assume 64GB
+    return 64 * 1024
 
 
 def _optimal_workers(df: Optional[pd.DataFrame] = None,
-                     max_workers: Optional[int] = None) -> int:
-    """Return safe worker count based on available memory and dataframe size."""
+                     max_workers: Optional[int] = None,
+                     quick: bool = False) -> int:
     cpu_count = os.cpu_count() or 4
     hard_limit = min(max_workers or cpu_count, cpu_count)
-
-    if df is not None and len(df) > 0 and len(df.columns) > 0:
-        df_mb = max(df.memory_usage(deep=True).sum() / (1024 * 1024), 0.1)
-        avail_mb = _available_memory_mb()
-        max_by_mem = max(1, int(avail_mb / (df_mb * 2.5)))
-        return min(hard_limit, max_by_mem)
-    return hard_limit
+    # Realistic per-worker: base ~200MB (python, 1178 edges, imports)
+    # + chart ~190MB (matplotlib 4350x5700 figure)
+    per_worker_mb = 100 if quick else 400
+    avail_mb = _available_memory_mb()
+    # Leave 30% headroom for system and parent process
+    max_by_mem = max(1, int(avail_mb * 0.7 / per_worker_mb))
+    result = min(hard_limit, max_by_mem)
+    # Never use more than 12 workers regardless — beyond that the memory
+    # overhead of 1178 edge definitions per worker dominates
+    result = min(result, 12)
+    _memory_logger.info(f"{'[SYSTEM]':40s} | {'_optimal':10s} | "
+                        f"avail={avail_mb:.0f}MB per_worker={per_worker_mb}MB "
+                        f"hard={hard_limit} result={result}")
+    return result
 
 
 # ── Logging for worker processes ──────────────────────────────────────
 
-_log_dir = Path(__file__).parent.parent / 'logs'
-_log_dir.mkdir(parents=True, exist_ok=True)
 _fh_warn = logging.FileHandler(str(_log_dir / 'warning.log'), encoding='utf-8')
 _fh_warn.setLevel(logging.WARNING)
 _fh_warn.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s][worker] %(message)s'))
@@ -76,34 +100,16 @@ logging.captureWarnings(True)
 
 
 def _mp_run_edge(args):
-    edge_name, data_path, sm_path, quick, bt_path, reports_dir_name = args
+    edge_name, data_path, sm_path, quick, bt_path, reports_dir_name, force = (args if len(args) == 7 else (*args, False))
     sys.path.insert(0, os.path.dirname(bt_path))
     import pandas as pd
     import matplotlib; matplotlib.use('Agg')
     from edge_registry import register_edge, get_edge, _registry, Edge, ConditionFn
-    # Use shared DataFrame via fork inheritance (zero-copy) when available
     global _SHARED_DF
     if _SHARED_DF is not None:
         df = _SHARED_DF
     else:
         df = pd.read_parquet(data_path)
-    def momentum_sma20(d):
-        sma20 = d['close'].rolling(20).mean().bfill()
-        s = pd.Series(0, index=d.index)
-        s[d['close'] > sma20] = 1; s[d['close'] < sma20] = -1
-        return s
-    register_edge(Edge(name="Price vs SMA20", entry_condition=momentum_sma20, close_horizons=[1,6,24], description=""))
-    def rsi_condition(d, period=14):
-        delta = d['close'].diff(); gain = delta.clip(lower=0); loss = (-delta).clip(lower=0)
-        avg_g = gain.rolling(period).mean(); avg_l = loss.rolling(period).mean()
-        rs = avg_g / avg_l; rsi = 100 - (100 / (1 + rs))
-        s = pd.Series(0, index=d.index); s[rsi < 30] = 1; s[rsi > 70] = -1; return s
-    register_edge(Edge(name="RSI 14 (30/70)", entry_condition=rsi_condition, close_horizons=[1,6,24], description=""))
-    def bb_condition(d, period=20, std=2.0):
-        sma = d['close'].rolling(period).mean(); sd = d['close'].rolling(period).std()
-        upper = sma + std * sd; lower = sma - std * sd
-        s = pd.Series(0, index=d.index); s[d['close'] < lower] = 1; s[d['close'] > upper] = -1; return s
-    register_edge(Edge(name="Bollinger Bands (20,2)", entry_condition=bb_condition, close_horizons=[1,6,24], description=""))
     edges_dir = Path(bt_path).parent / "edges"
     if edges_dir.exists():
         for pyfile in sorted(edges_dir.glob("*.py")):
@@ -119,15 +125,31 @@ def _mp_run_edge(args):
     safe_name = re.sub(r'[^\w\s-]', '', edge.name).strip().replace(' ', '_').lower()
     reports_dir = Path(reports_dir_name) / safe_name
     json_path = reports_dir / 'analysis.json'
-    if json_path.exists(): return f"[skip] {edge.name}"
-    df_analysis = df.copy(); signals = edge.entry_condition(df_analysis)
-    df_analysis['signal'] = signals; reports_dir.mkdir(parents=True, exist_ok=True)
+    if json_path.exists() and not force: return f"[skip] {edge.name}"
+    if force and json_path.exists():
+        json_path.unlink(missing_ok=True)
+        png_path = reports_dir / 'report.png'
+        if png_path.exists(): png_path.unlink(missing_ok=True)
+    try:
+        signals = edge.entry_condition(df)
+    except Exception as e:
+        logging.getLogger().warning(f"Edge '{edge.name}' entry_condition failed: {e}")
+        return f"[FAIL] {edge.name}: {e}"
+    df_analysis = df.copy()
+    df_analysis['signal'] = signals
+    reports_dir.mkdir(parents=True, exist_ok=True)
     output = str(reports_dir / 'report.png')
     with open(sm_path) as f: sm = json.load(f)
     src = sm.get(edge.name, bt_path)
+    _log_mem(edge.name, 'start')
+    mem_before = _rss_mb()
     try:
         analyze_edge(df_analysis, signal_col='signal', signal_name=edge.name, output_path=output, source_file=src, quick=quick)
+        mem_after = _rss_mb()
+        _log_mem(edge.name, 'end', f'DELTA={mem_after-mem_before:+.1f}MB')
+        del df_analysis
         return f"[done] {edge.name}"
     except Exception as e:
         logging.getLogger().error(f"Edge '{edge.name}' failed: {e}", exc_info=True)
+        _log_mem(edge.name, 'FAIL', str(e)[:60])
         return f"[FAIL] {edge.name}"

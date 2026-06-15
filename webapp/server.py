@@ -609,7 +609,7 @@ async def _run_analysis(task_id: str, body: AnalyzeRequest):
             with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as pool:
                 futs = []
                 for ename in edge_names:
-                    args = (ename, df_parquet, sm_path, body.quick, BT_PATH, reports_dir_name)
+                    args = (ename, df_parquet, sm_path, body.quick, BT_PATH, reports_dir_name, body.force)
                     futs.append(pool.submit(_mp_run_edge, tuple(args)))
 
                 for fut in concurrent.futures.as_completed(futs):

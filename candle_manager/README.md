@@ -1,73 +1,78 @@
-# 📊 Candle Manager
+# Market Data Manager v2.0
 
-Module Python pour récupérer et cacher les candles de trading depuis Binance via CCXT.
+Récupération unifiée de données crypto depuis plusieurs exchanges (Binance, Bybit, Deribit) — gratuit, sans authentification.
 
-## 🚀 Installation
+## Installation
 
 ```bash
-pip install ccxt pandas loguru
+pip install ccxt pandas loguru requests
 ```
 
-## 💡 Utilisation
+## Utilisation rapide
 
 ```python
-from candle_manager import CandleManager
+from market_data_manager import MarketDataManager, Metric
 
-manager = CandleManager(cache_dir="./cache")
+mgr = MarketDataManager(cache_dir="./cache")
 
-# Dernières N candles
-df = manager.get_candles("BTC/USDT", "1h", limit=100)
+# OHLCV (Binance Spot)
+df = mgr.get("ohlcv", "BTC/USDT", "1h", since="2024-01-01", until="2024-06-01")
 
-# Période spécifique (date range)
-df = manager.get_candles("ETH/USDT", "4h", since="2025-12-01", until="2025-12-31")
+# Funding Rate (Binance Futures)
+df = mgr.get("funding_rate", "DOGE/USDT", "8h", since="2024-01-01")
+
+# Open Interest (Bybit)
+df = mgr.get("open_interest", "BTC/USDT", "1h", since="2024-01-01")
+
+# Taker Volume (Binance Futures klines)
+df = mgr.get("taker_volume", "ETH/USDT", "4h", since="2024-01-01")
+
+# Liquidations (Deribit — BTC/ETH uniquement)
+df = mgr.get("liquidations", "BTC/USDT", "1d", since="2024-01-01")
+
+# Long/Short Ratio (Bybit)
+df = mgr.get("long_short_ratio", "BTC/USDT", "1h", since="2024-01-01")
 ```
 
-## 📋 Timeframes Supportés
+## Métriques disponibles
 
-`1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`, `3d`, `1w`, `1M`
+| Métrique | Source | Depuis | Granularités | Colonnes |
+|---|---|---|---|---|
+| `ohlcv` | Binance Spot | Nov 2019 | 1m→1M | open, high, low, close, volume |
+| `funding_rate` | Binance Futures | Nov 2019 | 2h, 4h, 8h | funding_rate, mark_price |
+| `open_interest` | Bybit | Mai 2020 | 5m→1d | open_interest, open_interest_usd |
+| `taker_volume` | Binance Futures | Nov 2019 | 1m→1M | taker_buy_base, taker_sell_base, taker_buy_quote, taker_sell_quote, taker_buy_ratio, taker_sell_ratio |
+| `liquidations` | Deribit | 2018 | 1h, 4h, 1d | long_size, long_size_usd, long_avg_price, short_size, short_size_usd, short_avg_price |
+| `long_short_ratio` | Bybit | Juil 2020 | 5m→1d | buy_ratio, sell_ratio, ls_ratio |
 
-## 🔧 Méthodes
+## API complète
 
 ```python
-# Récupérer des candles
-df = manager.get_candles(symbol, timeframe, since=None, until=None, limit=None, force_refresh=False)
+# Récupérer des données
+df = mgr.get(metric, symbol, timeframe, since="YYYY-MM-DD", until="YYYY-MM-DD", limit=N, force_refresh=False)
 
 # Gestion du cache
-manager.get_cache_info()              # Voir le cache
-manager.refresh_cache(symbol, tf)     # Rafraîchir
-manager.clear_cache()                 # Nettoyer
+mgr.refresh_cache(metric, symbol, timeframe)    # Mise à jour incrémentale
+mgr.clear_cache(metric?, symbol?, timeframe?)   # Supprimer le cache
+mgr.cache_info()                                # État du cache
 
-# Symboles disponibles
-manager.get_available_symbols()
+# Informations
+mgr.available_metrics()                         # Liste des métriques
+mgr.available_symbols(metric)                   # Symboles disponibles
 ```
 
-## 📊 DataFrame Retourné
+## Fonctionnalités
 
-| Colonne | Type |
-|---------|------|
-| timestamp (index) | datetime |
-| open | float |
-| high | float |
-| low | float |
-| close | float |
-| volume | float |
+- Cache automatique (pickle) avec écritures atomiques
+- Mise à jour incrémentale du cache (seul le gap manquant est téléchargé)
+- Rate limiting par exchange (thread-safe)
+- Mapping automatique des symboles (format canonique "BASE/QUOTE")
+- Ajustement automatique de l'OI Bybit (bilateral → unilateral, avant juin 2026)
+- Resampling des liquidations Deribit (événements bruts → timeframe demandé)
+- Gestion d'erreurs complète avec exceptions typées
 
-## ✨ Fonctionnalités
+## Limitations connues
 
-- ✅ Cache automatique (pickle)
-- ✅ Refresh incrémental
-- ✅ Rate limiting Binance
-- ✅ Multi-batch automatique (> 1000 candles)
-- ✅ Logs via loguru
-
-## 🤖 Pour les IA
-
-Interface simple :
-```python
-df = manager.get_candles("BTC/USDT", "1h", limit=100)
-# → DataFrame Pandas avec OHLCV, index datetime, trié, sans doublons
-```
-
-Voir [QUICK_START_AI.py](QUICK_START_AI.py) pour exemples.
-
-
+- **Liquidations** : Seuls BTC et ETH sont supportés (Deribit inverse perpetuals). L'API Deribit ne distingue pas long/short, donc `short_size` est toujours 0 et le total est dans `long_size`.
+- **Open Interest Bybit** : L'API ne retourne plus `openInterestUsd`, la colonne `open_interest_usd` sera NaN.
+- **Funding Rate** : Granularité minimale = 2h (certains contrats 4h ou 8h).

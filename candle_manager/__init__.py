@@ -1,11 +1,42 @@
 """
-Module de gestion intelligente des candles de trading.
+market_data_manager — unified market data fetching, caching, and management.
 
-Fournit un système de téléchargement, mise en cache et rafraîchissement
-automatique des données OHLCV depuis Binance via CCXT.
+Public API:
+    MarketDataManager  — single entry point for all operations.
+    Metric             — enum of supported data metrics.
+    Request            — dataclass encapsulating a fetch request.
+
+Example::
+
+    from market_data_manager import MarketDataManager, Metric
+
+    mdm = MarketDataManager()
+    df = mdm.get(Metric.OHLCV, "BTC/USDT", "1h",
+                 since="2024-01-01", until="2024-01-31")
+    print(df.head())
 """
 
-from .candle_manager import CandleManager
+from .manager import MarketDataManager
+from .models import Metric, Request
+from .exceptions import (
+    MarketDataError,
+    InvalidMetricError,
+    InvalidTimeframeError,
+    InvalidSymbolError,
+    SourceUnavailableError,
+    RateLimitExhaustedError,
+)
 
-__all__ = ['CandleManager']
-__version__ = '1.0.0'
+__all__ = [
+    "MarketDataManager",
+    "Metric",
+    "Request",
+    "MarketDataError",
+    "InvalidMetricError",
+    "InvalidTimeframeError",
+    "InvalidSymbolError",
+    "SourceUnavailableError",
+    "RateLimitExhaustedError",
+]
+
+__version__ = "2.0.0"

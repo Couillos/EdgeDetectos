@@ -33,6 +33,13 @@ PURPLE = '#BC8CFF'
 GRID = '#21262D'
 SIGNAL_COLOR = '#00D4AA'
 ALL_COLOR = '#FF6B6B'
+LEGEND_KW = {'facecolor': '#0A0D14', 'edgecolor': '#C9D1D9', 'framealpha': 0.95}
+
+
+def _legend(ax, *args, **kwargs):
+    for k, v in LEGEND_KW.items():
+        kwargs.setdefault(k, v)
+    return ax.legend(*args, **kwargs)
 
 
 def style_ax(ax, title='', xlabel='', ylabel=''):
@@ -83,7 +90,7 @@ def _build_panel_r1c2(ax, horizon_stats, horizons):
     ax.bar(range(len(wr)), wr, color=colors, alpha=0.8, width=0.6,
            edgecolor='white', linewidth=0.5)
     ax.axhline(50, color=YELLOW, linewidth=0.8, linestyle='--', label='50% baseline')
-    ax.legend(fontsize=7, labelcolor=TEXT)
+    _legend(ax, fontsize=7, labelcolor=TEXT)
     ax.set_xticks(range(len(wr)))
     ax.set_xticklabels(HORIZON_LABELS[:len(wr)], fontsize=7, color=TEXT)
     for i, v in enumerate(wr):
@@ -127,7 +134,7 @@ def _build_panel_r2c1(ax, signal_rets, all_rets, horizon_label='24h'):
     signal_mean = float(signal_rets.mean()) if len(signal_rets) > 0 else 0
     ax.axvline(signal_mean, color=SIGNAL_COLOR, linewidth=1.5,
                label=f'Signal mean: {signal_mean:+.4f}%')
-    ax.legend(fontsize=7, labelcolor=TEXT, loc='upper right')
+    _legend(ax, fontsize=7, labelcolor=TEXT, loc='upper right')
 
 
 def _build_panel_r2c2(ax, signal_rets, all_rets, horizon_label='24h'):
@@ -152,7 +159,7 @@ def _build_panel_r2c2(ax, signal_rets, all_rets, horizon_label='24h'):
                label=f'Signal mean: {signal_rets.mean():+.4f}%')
     ax.axvline(mc_means.mean(), color=RED, linewidth=1.0, linestyle='--',
                label=f'Random mean: {mc_means.mean():+.4f}%')
-    ax.legend(fontsize=7, labelcolor=TEXT, loc='upper left')
+    _legend(ax, fontsize=7, labelcolor=TEXT, loc='upper left')
     p_color = GREEN if mc_p_val < 0.05 else RED
     ax.text(0.95, 0.95, f'MC p={mc_p_val:.4f}', transform=ax.transAxes,
             ha='right', va='top', fontsize=9, fontweight='bold',
@@ -194,7 +201,7 @@ def _build_panel_r3c1(ax, rolling):
     fmt = mdates.DateFormatter('%Y-%m')
     ax.xaxis.set_major_formatter(fmt)
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=7)
-    ax.legend(fontsize=7, labelcolor=TEXT)
+    _legend(ax, fontsize=7, labelcolor=TEXT)
 
 
 def _build_panel_r3c2(ax, rolling):
@@ -215,7 +222,7 @@ def _build_panel_r3c2(ax, rolling):
     fmt = mdates.DateFormatter('%Y-%m')
     ax.xaxis.set_major_formatter(fmt)
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=7)
-    ax.legend(fontsize=7, labelcolor=TEXT)
+    _legend(ax, fontsize=7, labelcolor=TEXT)
 
 
 def _build_panel_r3c3(ax, yearly):
@@ -272,7 +279,7 @@ def _build_panel_r4c12(ax, equity_curves, horizons):
     fmt = mdates.DateFormatter('%Y-%m')
     ax.xaxis.set_major_formatter(fmt)
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=7)
-    ax.legend(fontsize=6, labelcolor=TEXT, loc='upper left', ncol=2)
+    _legend(ax, fontsize=6, labelcolor=TEXT, loc='upper left', ncol=2)
     for h in horizons:
         if h in equity_curves and len(equity_curves[h]) > 0:
             ec = equity_curves[h].dropna()
@@ -310,8 +317,8 @@ def _build_panel_r4c3(ax, vol_regime):
     ax.set_xticks([i + 0.2 for i in x])
     ax.set_xticklabels(vol_regime['regime'], fontsize=8, color=TEXT)
     ax.axhline(0, color=GRID, linewidth=0.5)
-    ax.legend(fontsize=7, labelcolor=TEXT, loc='upper left')
-    ax2.legend(fontsize=7, labelcolor=TEXT, loc='upper right')
+    _legend(ax, fontsize=7, labelcolor=TEXT, loc='upper left')
+    _legend(ax2, fontsize=7, labelcolor=TEXT, loc='upper right')
 
 
 def _build_panel_r5c1(ax, horizon_stats, horizons):
@@ -327,7 +334,7 @@ def _build_panel_r5c1(ax, horizon_stats, horizons):
     ax.axhline(0, color=GRID, linewidth=0.5)
     ax.set_xticks(list(x))
     ax.set_xticklabels(HORIZON_LABELS[:len(hs)], fontsize=7, color=TEXT)
-    ax.legend(fontsize=7, labelcolor=TEXT)
+    _legend(ax, fontsize=7, labelcolor=TEXT)
 
 
 def _build_panel_r5c2(ax, horizon_stats, horizons):
@@ -355,7 +362,7 @@ def _build_panel_r5c3(ax, signal_rets, all_rets, horizon_label='1h'):
     if len(signal_rets) > 2:
         ax.hist(signal_rets, bins=bins, alpha=0.5, color=SIGNAL_COLOR, density=True, label='Signal')
     ax.axvline(0, color=YELLOW, linewidth=0.8, linestyle='--')
-    ax.legend(fontsize=7, labelcolor=TEXT, loc='upper right')
+    _legend(ax, fontsize=7, labelcolor=TEXT, loc='upper right')
 
 
 def _build_panel_r6(ax, analysis, signal_name, horizons):
@@ -443,9 +450,9 @@ def generate_report(analysis: Dict, signal_name: str, output_path: str,
     if horizons is None:
         horizons = DEFAULT_HORIZONS
 
-    fig = plt.figure(figsize=(24, 32), facecolor=BG)
-    gs = gridspec.GridSpec(6, 3, figure=fig, left=0.06, right=0.96, top=0.984,
-                           bottom=0.01, hspace=0.38, wspace=0.28)
+    fig = plt.figure(figsize=(29, 38), facecolor=BG)
+    gs = gridspec.GridSpec(6, 3, figure=fig, left=0.05, right=0.97, top=0.985,
+                           bottom=0.01, hspace=0.25, wspace=0.18)
 
     horizon_stats = analysis['horizon_stats']
     rolling = analysis['rolling']
@@ -581,10 +588,10 @@ def analyze_edge(df: pd.DataFrame, signal_col: str = 'signal',
                  quick: bool = False):
     if horizons is None:
         horizons = DEFAULT_HORIZONS
-    df = df.copy()
     if signal_col not in df.columns:
         has_fwd = any(c.startswith('fwd_') for c in df.columns)
         if not has_fwd:
+            df = df.copy()
             df = compute_forward_returns(df, horizons)
         if signal_col not in df.columns:
             raise ValueError(f"Column '{signal_col}' not found in DataFrame. "
