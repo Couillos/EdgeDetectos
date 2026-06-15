@@ -248,9 +248,9 @@ def generate_report(analysis: Dict, signal_name: str, output_path: str,
     if horizons is None:
         horizons = DEFAULT_HORIZONS
 
-    fig = plt.figure(figsize=(22, 30), facecolor=BG)
-    gs = gridspec.GridSpec(16, 2, hspace=0.4, wspace=0.3,
-                           left=0.05, right=0.95, top=0.97, bottom=0.02)
+    fig = plt.figure(figsize=(14, 22), facecolor=BG)
+    gs = gridspec.GridSpec(16, 2, hspace=0.35, wspace=0.25,
+                           left=0.06, right=0.97, top=0.97, bottom=0.02)
 
     horizon_stats = analysis['horizon_stats']
     rolling = analysis['rolling']
@@ -274,8 +274,10 @@ def generate_report(analysis: Dict, signal_name: str, output_path: str,
         f'Signal %: {analysis.get("signal_pct", 0):.1f}%  |  Signal Count: {analysis.get("signal_count", 0)}',
     ]
     for i, line in enumerate(info_lines):
-        ax0.text(0.02, 0.75 - i * 0.18, line, transform=ax0.transAxes,
-                fontsize=10, color=TEXT, fontfamily='monospace')
+        if i >= 4:
+            break
+        ax0.text(0.02, 0.78 - i * 0.20, line, transform=ax0.transAxes,
+                fontsize=9, color=TEXT, fontfamily='monospace')
 
     panels = {
         1: ('Horizon Mean Return', _build_panel_1, [horizon_stats, horizons]),
@@ -305,12 +307,12 @@ def generate_report(analysis: Dict, signal_name: str, output_path: str,
         if pnl_num <= 8:
             ax = fig.add_subplot(gs[pnl_num - 1, 0])
         elif pnl_num <= 15:
-            ax = fig.add_subplot(gs[pnl_num - 1, 0])
+            ax = fig.add_subplot(gs[pnl_num - 1, 1])
         else:
             ax = fig.add_subplot(gs[pnl_num - 1, :])
         builder_fn(ax, *args)
 
-    fig.savefig(output_path, dpi=120, facecolor=BG, bbox_inches='tight')
+    fig.savefig(output_path, dpi=100, facecolor=BG, bbox_inches='tight')
     plt.close(fig)
 
 
