@@ -26,7 +26,8 @@ class OOSValidator:
                      bt_path: str, sm_path: str,
                      n_workers: Optional[int] = None,
                      quick: bool = True,
-                     progress_callback=None) -> List[Dict]:
+                     progress_callback=None,
+                     oos_reports_dir: str = '') -> List[Dict]:
         df_oos = df[df.index >= self.split_date].copy()
         tmp_dir = Path('/tmp/oos_validation')
         tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -49,7 +50,7 @@ class OOSValidator:
         with Pool(n_workers) as pool:
             args_list = [(name, oos_parquet, bt_path, sm_path,
                           reports_dir, self.split_date,
-                          self.horizons, quick)
+                          self.horizons, quick, oos_reports_dir)
                          for name in edge_names]
             for i, result in enumerate(pool.imap_unordered(_oos_worker, args_list), 1):
                 elapsed = time.time() - t0

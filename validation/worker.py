@@ -14,7 +14,7 @@ DEFAULT_HORIZONS = [1, 4, 6, 12, 24, 48, 72, 168]
 
 
 def _oos_worker(args: tuple) -> Dict:
-    edge_name, oos_parquet, bt_path, sm_path, reports_dir, split_date, horizons, quick = args
+    edge_name, oos_parquet, bt_path, sm_path, reports_dir, split_date, horizons, quick, oos_reports_dir = args
 
     sys.path.insert(0, os.path.dirname(bt_path))
     import pandas as pd
@@ -167,6 +167,56 @@ def _oos_worker(args: tuple) -> Dict:
                 'signal_pct': oos_analysis.get('signal_pct', 0),
                 'horizon_stats': oos_analysis.get('horizon_stats', {})},
     })
+    # Save OOS report (analysis.json)
+    if oos_reports_dir:
+        oos_edge_dir = Path(oos_reports_dir) / safe_name
+        oos_edge_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            hs = oos_analysis.get('horizon_stats', {})
+            best_h = oos_analysis.get('best_horizon')
+            best_s = hs.get(best_h, {}) if best_h else {}
+            def _v(v, default=0):
+                if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
+                    return default
+                return float(v)
+            def _iv(v, default=0):
+                if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))):
+                    return default
+                return int(v)
+            json_data = {
+                'signal_name': edge.name,
+                'source_file': edge.name,
+                'report_image': str(oos_edge_dir / 'report.png'),
+                'total_signals': _iv(oos_analysis.get('signal_count')),
+                'signal_pct': _v(oos_analysis.get('signal_pct')),
+                'best_horizon': f'+{best_h}h' if best_h else '-',
+                'best_horizon_num': best_h,
+                'best_sharpe': _v(best_s.get('sharpe')),
+                'best_mean': _v(best_s.get('mean')),
+                'best_winrate': _v(best_s.get('winrate')),
+                'best_t_p': _v(best_s.get('t_p'), 1),
+                'best_mc_p': _v(best_s.get('mc_p'), 1),
+                'horizons': {},
+            }
+            for h, s in sorted(hs.items()):
+                json_data['horizons'][str(h)] = {
+                    'n_signals': _iv(s.get('n_signals')),
+                    'mean': _v(s.get('mean')),
+                    'std': _v(s.get('std')),
+                    'winrate': _v(s.get('winrate')),
+                    'sharpe': _v(s.get('sharpe')),
+                    't_p': _v(s.get('t_p'), 1),
+                    'mc_p': _v(s.get('mc_p'), 1),
+                    'ks_p': _v(s.get('ks_p'), 1),
+                    'total_return': _v(s.get('total_return')),
+                }
+            with open(oos_edge_dir / 'analysis.json', 'w', encoding='utf-8') as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            result['verdict_detail'] = (result.get('verdict_detail', '') +
+                                        f'; OOS report save failed: {e}')
+
     return result
 
 

@@ -552,6 +552,54 @@ function highlightPython(code) {
   }).join('');
 }
 
+function buildReportImage(edge, field, altText, fallbackText) {
+  const symParam = state.detailSymbol ? `?symbol=${encodeURIComponent(state.detailSymbol)}` : '';
+  const img = $el('img', { src: edge[field] + symParam, alt: altText, style: { width: '100%', maxWidth: '100%', display: 'block', margin: '0 auto', border: '1px solid var(--border)', borderRadius: '8px' } });
+  img.onerror = function() {
+    this.style.display = 'none';
+    this.parentNode.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:14px">' + fallbackText + '</div>';
+  };
+  return img;
+}
+
+function buildOOSSummary(jsonUrl, symbol) {
+  const div = $el('div', { style: { padding: '12px' } },
+    $el('div', { style: { fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' } }, 'Loading OOS data...'),
+  );
+  const symParam = symbol ? `?symbol=${encodeURIComponent(symbol)}` : '';
+  api.get(jsonUrl + symParam).then(oosData => {
+    const h = oosData.horizons || {};
+    const entries = Object.entries(h).sort((a, b) => Number(a[0]) - Number(b[0]));
+    if (entries.length === 0) {
+      div.innerHTML = '<div style="padding:12px;text-align:center;color:var(--text-secondary);font-size:13px">OOS analysis data available but no horizon stats.</div>';
+      return;
+    }
+    div.innerHTML = '';
+    const table = $el('table', { className: 'data-table horizon-table', style: { fontSize: '12px' } },
+      $el('thead', {},
+        $el('tr', {},
+          $el('th', 'H'), $el('th', { className: 'num' }, 'Sig'), $el('th', { className: 'num' }, 'Mean%'), $el('th', { className: 'num' }, 'WR'), $el('th', { className: 'num' }, 'Sharpe'), $el('th', { className: 'num' }, 't-p'),
+        )
+      ),
+      $el('tbody', {}, ...entries.map(([h, d]) => {
+        const isBest = String(oosData.best_horizon_num) === h;
+        return $el('tr', { className: isBest ? 'best' : '' },
+          $el('td', { style: { fontWeight: isBest ? 600 : 400 } }, `+${h}h`),
+          $el('td', { className: 'num' }, String(d.n_signals ?? 0)),
+          $el('td', { className: 'num' }, num((d.mean ?? 0) * 100)),
+          $el('td', { className: 'num' }, pct(d.winrate)),
+          $el('td', { className: 'num' }, num(d.sharpe)),
+          $el('td', { className: 'num' }, num(d.t_p, 4)),
+        );
+      })),
+    );
+    div.append(table);
+  }).catch(() => {
+    div.innerHTML = '<div style="padding:12px;text-align:center;color:var(--text-secondary);font-size:13px">Failed to load OOS analysis data.</div>';
+  });
+  return div;
+}
+
 /* ============ EDGE DETAIL ============ */
 async function renderEdgeDetail(container, name) {
   container.innerHTML = '<div class="flex justify-center" style="padding:60px"><div class="spinner"></div></div>';
@@ -592,27 +640,28 @@ async function renderEdgeDetail(container, name) {
     );
     container.append(header);
 
-    // Analysis report image FIRST
+    // Analysis report image FIRST — IS & OOS side by side
     const horizons = edge.horizons;
     if (horizons && Object.keys(horizons).length > 0) {
       const reportSection = $el('div', { className: 'detail-section' },
         $el('h2', {}, 'Analysis Report'),
+        $el('div', { className: 'report-grid', style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' } },
+          // IS report
+          $el('div', {},
+            $el('h3', { style: { fontSize: '14px', marginBottom: '8px', color: 'var(--text-secondary)' } }, 'In-Sample'),
+            buildReportImage(edge, 'report_png', edge.signal_name, 'IS report not available'),
+          ),
+          // OOS report (if available)
+          $el('div', { id: 'oos-report-cell' },
+            $el('h3', { style: { fontSize: '14px', marginBottom: '8px', color: 'var(--text-secondary)' } }, 'Out-of-Sample'),
+            edge.oos_report_png
+              ? buildReportImage(edge, 'oos_report_png', edge.signal_name + ' OOS', 'OOS report not available')
+              : edge.oos_report_json
+                ? buildOOSSummary(edge.oos_report_json, state.detailSymbol)
+                : $el('div', { style: { padding: '20px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '14px' } }, 'No OOS report yet. Run OOS validation first.'),
+          ),
+        ),
       );
-      if (edge.report_png) {
-        const wrap = $el('div', { className: 'report-image-wrap' });
-        const symParam = state.detailSymbol ? `?symbol=${encodeURIComponent(state.detailSymbol)}` : '';
-        const img = $el('img', { src: edge.report_png + symParam, alt: `Report for ${edge.signal_name}`, style: { width: '100%', maxWidth: '1200px', display: 'block', margin: '0 auto', border: '1px solid var(--border)', borderRadius: '8px' } });
-        img.onerror = () => {
-          wrap.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:14px">Report image not available (analysis was run with --quick).</div>';
-        };
-        wrap.appendChild(img);
-        reportSection.appendChild(wrap);
-      } else {
-        reportSection.appendChild($el('div', { style: { padding: '20px', textAlign: 'center', color: 'var(--text-secondary)' } },
-          'No report image generated yet.',
-          $el('button', { className: 'btn btn-sm', style: { marginLeft: '8px' }, onclick: () => startAnalysis([edge.signal_name], true, false, [state.detailSymbol]) }, 'Generate Report')
-        ));
-      }
       container.append(reportSection);
     }
 

@@ -171,6 +171,18 @@ def _edge_report_png_url(name: str) -> str:
     return f'/api/report/{quote(name)}/png'
 
 
+def _oos_reports_dir(symbol: str) -> str:
+    return f'reports_{_symbol_slug(symbol)}_oos'
+
+
+def _edge_oos_report_json_url(name: str) -> str:
+    return f'/api/oos-report/{quote(name)}/json'
+
+
+def _edge_oos_report_png_url(name: str) -> str:
+    return f'/api/oos-report/{quote(name)}/png'
+
+
 # ─── Cache ─────────────────────────────────────────────────────────────
 
 import time as _time
@@ -341,6 +353,11 @@ def edge_detail(name: str, symbol: str = 'BTC/USDT'):
     aj['description'] = edge.description
     aj['report_json'] = _edge_report_json_url(name)
     aj['report_png'] = _edge_report_png_url(name)
+    # OOS report URLs (may or may not exist)
+    oos_rd = _oos_reports_dir(symbol)
+    oos_safe = _safe_name(name)
+    aj['oos_report_json'] = _edge_oos_report_json_url(name) if (PROJECT_ROOT / oos_rd / oos_safe / 'analysis.json').exists() else None
+    aj['oos_report_png'] = _edge_oos_report_png_url(name) if (PROJECT_ROOT / oos_rd / oos_safe / 'report.png').exists() else None
     aj['has_analysis'] = True
     return _clean_json(aj)
 
@@ -390,6 +407,32 @@ def report_png(name: str, symbol: str = ''):
         if png_path.exists():
             return FileResponse(str(png_path), media_type='image/png')
     raise HTTPException(404, f"No report.png for '{name}'")
+
+
+# ─── GET /api/oos-report/{name}/json ──────────────────────────────────
+
+@app.get('/api/oos-report/{name:path}/json')
+def oos_report_json(name: str, symbol: str = 'BTC/USDT'):
+    name = unquote(name)
+    rd = _oos_reports_dir(symbol)
+    safe = _safe_name(name)
+    json_path = PROJECT_ROOT / rd / safe / 'analysis.json'
+    if json_path.exists():
+        return _clean_json(json.loads(json_path.read_text(encoding='utf-8')))
+    raise HTTPException(404, f"No OOS analysis.json for '{name}'")
+
+
+# ─── GET /api/oos-report/{name}/png ───────────────────────────────────
+
+@app.get('/api/oos-report/{name:path}/png')
+def oos_report_png(name: str, symbol: str = 'BTC/USDT'):
+    name = unquote(name)
+    rd = _oos_reports_dir(symbol)
+    safe = _safe_name(name)
+    png_path = PROJECT_ROOT / rd / safe / 'report.png'
+    if png_path.exists():
+        return FileResponse(str(png_path), media_type='image/png')
+    raise HTTPException(404, f"No OOS report.png for '{name}'")
 
 
 # ─── GET /api/ranking ─────────────────────────────────────────────────
@@ -787,7 +830,7 @@ async def _run_oos(task_id: str, body: OOSValidateRequest):
             json.dump(source_map, f)
 
         reports_path = str(PROJECT_ROOT / rd)
-        # Count edges so total is known before validation starts
+        # Edge count before starting
         reports_dir_path = Path(reports_path)
         edge_count = 0
         if reports_dir_path.exists():
@@ -795,6 +838,14 @@ async def _run_oos(task_id: str, body: OOSValidateRequest):
                 if (subdir / 'analysis.json').exists():
                     edge_count += 1
         task['total'] = edge_count
+
+        # OOS reports directory (separate from IS), purge old data
+        oos_reports_path = str(PROJECT_ROOT / f'{rd}_oos')
+        oos_dir = Path(oos_reports_path)
+        if oos_dir.exists():
+            import shutil
+            shutil.rmtree(oos_reports_path)
+        oos_dir.mkdir(parents=True, exist_ok=True)
 
         def _oos_progress(i, result):
             task['completed'] = i
@@ -813,7 +864,8 @@ async def _run_oos(task_id: str, body: OOSValidateRequest):
         validator = OOSValidator()
         results = validator.validate_all(df, reports_path, BT_PATH, sm_path,
                                          n_workers=oos_workers, quick=True,
-                                         progress_callback=_oos_progress)
+                                         progress_callback=_oos_progress,
+                                         oos_reports_dir=oos_reports_path)
 
         out_stem = str(PROJECT_ROOT / f'oos_{sym_slug}')
         validator.generate_summary(results, body.symbol, output_path=f'{out_stem}.txt')
