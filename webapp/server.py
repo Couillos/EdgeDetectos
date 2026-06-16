@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
 
     global SYMBOLS
     for d in PROJECT_ROOT.iterdir():
-        if d.name.startswith('reports_') and d.is_dir():
+        if d.name.startswith('reports_') and d.is_dir() and not d.name.endswith('_oos'):
             sym = d.name[len('reports_'):].replace('_', '/', 1)
             SYMBOLS.append(sym)
     SYMBOLS = sorted(set(SYMBOLS))
@@ -80,14 +80,26 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Edge Generator API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
-
 WEBAPP_ROOT = Path(__file__).parent
+_DIST = WEBAPP_ROOT / 'frontend' / 'dist'
+
+# Serve legacy static files (dev fallback / old clients)
+_static_dir = WEBAPP_ROOT / 'static'
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
+# Serve built frontend assets (prod)
+_assets_dir = _DIST / 'assets'
+if _assets_dir.exists():
+    app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
 
 
 @app.get('/')
 @app.head('/')
 def serve_index():
+    # Prefer the Vite build; fall back to legacy template for dev without Docker frontend
+    if (_DIST / 'index.html').exists():
+        return HTMLResponse((_DIST / 'index.html').read_text())
     return HTMLResponse((WEBAPP_ROOT / 'templates' / 'index.html').read_text())
 
 
@@ -100,6 +112,14 @@ EXTRA_METRICS = ['funding_rate', 'open_interest', 'taker_volume', 'long_short_ra
 
 def _safe_name(name: str) -> str:
     return re.sub(r'[^\w\s-]', '', name).strip().replace(' ', '_').lower()
+
+
+def _is_user_edge(name: str) -> bool:
+    """Return True only if this edge has a file in edges/."""
+    safe = re.sub(r'[^\w\s-]', '', name).strip().replace(' ', '_').replace('-', '_').lower()
+    if safe and safe[0].isdigit():
+        safe = '_' + safe
+    return (PROJECT_ROOT / 'edges' / (safe + '.py')).exists()
 
 
 def _symbol_slug(symbol: str) -> str:
@@ -142,12 +162,36 @@ def _clean_json(obj):
     return _clean_nan(obj)
 
 
+def _recompute_verdict(horizons: dict) -> str:
+    """Recompute verdict from saved horizon stats — only count positive-mean horizons."""
+    tests_count = 0
+    for h_data in horizons.values():
+        mean = h_data.get('mean') or 0
+        if mean <= 0:
+            continue
+        t_p = h_data.get('t_p', 1) or 1
+        ks_p = h_data.get('ks_p', 1) or 1
+        mc_p = h_data.get('mc_p', 1) or 1
+        if isinstance(t_p, (int, float)) and t_p < 0.05: tests_count += 1
+        if isinstance(ks_p, (int, float)) and ks_p < 0.05: tests_count += 1
+        if isinstance(mc_p, (int, float)) and mc_p < 0.05: tests_count += 1
+    thresholds = [(21, 'STRONG'), (15, 'STRONG'), (9, 'MODERATE'), (3, 'WEAK'), (0, 'NONE')]
+    for threshold, v in thresholds:
+        if tests_count >= threshold:
+            return v
+    return 'NONE'
+
+
 def _read_analysis_json(name: str, symbol: str) -> Optional[dict]:
     rd = _reports_dir(symbol)
     path = Path(PROJECT_ROOT / rd / _safe_name(name) / 'analysis.json')
     if path.exists():
         try:
-            return json.loads(path.read_text(encoding='utf-8'))
+            data = json.loads(path.read_text(encoding='utf-8'))
+            # Recompute verdict using corrected logic (only count positive-mean horizons)
+            if data.get('horizons'):
+                data['verdict'] = _recompute_verdict(data['horizons'])
+            return data
         except Exception:
             pass
     return None
@@ -231,6 +275,8 @@ def _build_edge_list(symbol: str, search: str = '', status: str = 'all',
     sym_cache = _edges_cache.get(symbol, {})
     edges = []
     for name, edge in _registry.items():
+        if not _is_user_edge(name):
+            continue
         if search and search.lower() not in name.lower():
             continue
         aj = sym_cache.get(name)
@@ -535,7 +581,7 @@ def oos_data(symbol: str):
 
     df = pd.read_csv(str(csv_path))
     verdicts = df['verdict'].value_counts().to_dict()
-    for v in ['STRONG', 'PASS', 'WEAK', 'FAIL']:
+    for v in ['STRONG', 'MODERATE', 'WEAK', 'NONE']:
         verdicts.setdefault(v, 0)
 
     edges = []
@@ -566,6 +612,14 @@ def oos_data(symbol: str):
 
 @app.get('/api/symbols')
 def get_symbols():
+    global SYMBOLS
+    syms = []
+    for d in PROJECT_ROOT.iterdir():
+        if d.name.startswith('reports_') and d.is_dir() and not d.name.endswith('_oos'):
+            sym = d.name[len('reports_'):].replace('_', '/', 1)
+            syms.append(sym)
+    if syms:
+        SYMBOLS = sorted(set(syms))
     return SYMBOLS
 
 
@@ -849,7 +903,7 @@ async def _run_oos(task_id: str, body: OOSValidateRequest):
 
         def _oos_progress(i, result):
             task['completed'] = i
-            verdict = result.get('verdict', 'FAIL')
+            verdict = result.get('verdict', 'NONE')
             task['updates'].append({
                 'type': 'progress',
                 'edge_name': result.get('edge_name', '?'),
@@ -863,7 +917,7 @@ async def _run_oos(task_id: str, body: OOSValidateRequest):
         oos_workers = body.workers if body.workers is not None else max(1, (os.cpu_count() or 4) - 1)
         validator = OOSValidator()
         results = validator.validate_all(df, reports_path, BT_PATH, sm_path,
-                                         n_workers=oos_workers, quick=True,
+                                         n_workers=oos_workers, quick=False,
                                          progress_callback=_oos_progress,
                                          oos_reports_dir=oos_reports_path)
 

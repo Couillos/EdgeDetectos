@@ -167,6 +167,16 @@ def _oos_worker(args: tuple) -> Dict:
                 'signal_pct': oos_analysis.get('signal_pct', 0),
                 'horizon_stats': oos_analysis.get('horizon_stats', {})},
     })
+    # Generate OOS report.png
+    if oos_reports_dir and not quick:
+        try:
+            from analysis.report import generate_report
+            oos_edge_dir_path = Path(oos_reports_dir) / safe_name
+            oos_edge_dir_path.mkdir(parents=True, exist_ok=True)
+            generate_report(oos_analysis, edge.name, str(oos_edge_dir_path / 'report.png'), horizons)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+
     # Save OOS report (analysis.json)
     if oos_reports_dir:
         oos_edge_dir = Path(oos_reports_dir) / safe_name
@@ -399,13 +409,13 @@ def _classify_edge(is_score: float, oos_score: float, decay: Dict,
     is_sharpe = is_best_s.get('sharpe', 0) or 0
 
     if oos_n < MIN_SIGNALS_OOS:
-        return {'label': 'FAIL', 'detail': f'Only {oos_n} OOS signals'}
+        return {'label': 'NONE', 'detail': f'Only {oos_n} OOS signals'}
     if oos_sharpe < -0.05 and (oos_t_p < 0.10 or oos_mc_p < 0.10):
-        return {'label': 'FAIL', 'detail': f'Significantly negative OOS ({oos_sharpe:.3f})'}
+        return {'label': 'NONE', 'detail': f'Significantly negative OOS ({oos_sharpe:.3f})'}
     if is_sharpe > 0.3 and oos_sharpe < -0.3:
-        return {'label': 'FAIL', 'detail': f'Edge flipped ({is_sharpe:.2f}→{oos_sharpe:.2f})'}
+        return {'label': 'NONE', 'detail': f'Edge flipped ({is_sharpe:.2f}→{oos_sharpe:.2f})'}
     if composite_decay > 0.85:
-        return {'label': 'FAIL', 'detail': f'Decay {composite_decay:.2f} > 0.85'}
+        return {'label': 'NONE', 'detail': f'Decay {composite_decay:.2f} > 0.85'}
 
     composite_score = is_score * 0.25 + oos_score * 0.50 + (1 - composite_decay) * 100 * 0.25
     weak_reasons = []
@@ -423,5 +433,5 @@ def _classify_edge(is_score: float, oos_score: float, decay: Dict,
     if composite_score >= 70 and not weak_reasons:
         return {'label': 'STRONG', 'detail': f'Score {composite_score:.1f}'}
     if composite_score >= 45:
-        return {'label': 'PASS', 'detail': f'Score {composite_score:.1f}'}
+        return {'label': 'MODERATE', 'detail': f'Score {composite_score:.1f}'}
     return {'label': 'WEAK', 'detail': f'Score {composite_score:.1f}'}

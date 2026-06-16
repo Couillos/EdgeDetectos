@@ -377,11 +377,17 @@ def _build_panel_r6(ax, analysis, signal_name, horizons):
     best_s = hs.get(best_h, {}) if best_h else hs.get(24, {})
 
     t_significant = sum(1 for h in horizons
-                        if hs.get(h, {}).get('t_p', 1) is not None and hs.get(h, {}).get('t_p', 1) < 0.05)
+                        if (hs.get(h, {}).get('mean') or 0) > 0
+                        and hs.get(h, {}).get('t_p', 1) is not None
+                        and hs.get(h, {}).get('t_p', 1) < 0.05)
     mc_significant = sum(1 for h in horizons
-                         if hs.get(h, {}).get('mc_p', 1) is not None and hs.get(h, {}).get('mc_p', 1) < 0.05)
+                         if (hs.get(h, {}).get('mean') or 0) > 0
+                         and hs.get(h, {}).get('mc_p', 1) is not None
+                         and hs.get(h, {}).get('mc_p', 1) < 0.05)
     ks_significant = sum(1 for h in horizons
-                         if hs.get(h, {}).get('ks_p', 1) is not None and hs.get(h, {}).get('ks_p', 1) < 0.05)
+                         if (hs.get(h, {}).get('mean') or 0) > 0
+                         and hs.get(h, {}).get('ks_p', 1) is not None
+                         and hs.get(h, {}).get('ks_p', 1) < 0.05)
     tests_passed = (1 if t_significant > 0 else 0) + (1 if mc_significant > 0 else 0) + (1 if ks_significant > 0 else 0)
 
     if tests_passed >= 3:
@@ -512,12 +518,15 @@ def _build_analysis_json(analysis: Dict, signal_name: str,
     best_t_p = 1.0
     best_mc_p = 1.0
     for h, s in hs.items():
+        mean = s.get('mean') or 0
         t_p = s.get('t_p', np.nan)
         ks_p = s.get('ks_p', np.nan)
         mc_p = s.get('mc_p', np.nan)
-        if not np.isnan(t_p) and t_p < 0.05: tests_count += 1
-        if not np.isnan(ks_p) and ks_p < 0.05: tests_count += 1
-        if not np.isnan(mc_p) and mc_p < 0.05: tests_count += 1
+        # Only count significance for horizons with positive mean returns
+        if mean > 0:
+            if not np.isnan(t_p) and t_p < 0.05: tests_count += 1
+            if not np.isnan(ks_p) and ks_p < 0.05: tests_count += 1
+            if not np.isnan(mc_p) and mc_p < 0.05: tests_count += 1
         if not np.isnan(t_p): best_t_p = min(best_t_p, t_p)
         if not np.isnan(mc_p): best_mc_p = min(best_mc_p, mc_p)
 

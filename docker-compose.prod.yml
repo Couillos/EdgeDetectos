@@ -1,0 +1,22 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/prod.Dockerfile
+    working_dir: /app
+    command: uvicorn webapp.server:app --host 0.0.0.0 --port 8000 --workers 2
+    volumes:
+      # Runtime data only (no source code)
+      - ./cache:/app/cache
+      - ./edges:/app/edges
+      - ./logs:/app/logs
+      # Reports dirs are created dynamically by the app
+      - prod-reports:/app/reports_data
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MPLBACKEND=Agg
+
+volumes:
+  prod-reports:
