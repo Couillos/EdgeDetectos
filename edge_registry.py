@@ -16,14 +16,27 @@ ConditionFn = Callable[[pd.DataFrame], pd.Series]
 
 _registry: Dict[str, 'Edge'] = {}
 
+SUPPORTED_METRICS = {
+    'ohlcv': 'OHLCV (open, high, low, close, volume)',
+    'funding_rate': 'Binance Futures funding rate (funding_rate, mark_price)',
+    'open_interest': 'Bybit open interest (open_interest, open_interest_usd)',
+    'taker_volume': 'Binance taker volume (taker_buy_*, taker_sell_*)',
+    'long_short_ratio': 'Bybit long/short ratio (buy_ratio, sell_ratio, ls_ratio)',
+}
+
+DEFAULT_HORIZONS = [1, 4, 6, 12, 24, 48, 72, 168]
+
 
 @dataclass
 class Edge:
     name: str
     entry_condition: ConditionFn
-    close_horizons: List[int] = field(default_factory=lambda: [1, 2, 4, 8, 12, 24])
+    direction: str  # 'long' or 'short'
+    close_horizons: List[int] = field(default_factory=lambda: DEFAULT_HORIZONS)
     color: str = '#2196F3'
     description: str = ''
+    metric: str = 'ohlcv'
+    timeframe: str = '1h'
 
 
 def register_edge(edge: Edge):

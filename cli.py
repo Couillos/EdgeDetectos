@@ -44,11 +44,15 @@ def main():
     parser.add_argument("--oos-validate", action="store_true", help="Run OOS validation on all edges")
     parser.add_argument("--list-indicators", action="store_true", help="List all available formula indicators")
     parser.add_argument("--create-edge", type=str, default=None, metavar='NAME', help="Create a new edge file from formulas")
-    parser.add_argument("--long", type=str, default=None, help="Long entry formula (for --create-edge)")
-    parser.add_argument("--short", type=str, default=None, help="Short entry formula (for --create-edge)")
+    parser.add_argument("--long", type=str, default=None, help="Long entry formula (for --create-edge, mutually exclusive with --short)")
+    parser.add_argument("--short", type=str, default=None, help="Short entry formula (for --create-edge, mutually exclusive with --long)")
     parser.add_argument("--horizons", type=str, default=None, help="Close horizons (comma-separated, for --create-edge)")
     parser.add_argument("--desc", type=str, default='', help="Edge description (for --create-edge)")
+    parser.add_argument("--metric", type=str, default='ohlcv', choices=['ohlcv', 'funding_rate', 'open_interest', 'taker_volume', 'long_short_ratio'],
+                        help="Market data metric (for --create-edge, default: ohlcv)")
+    parser.add_argument("--timeframe", type=str, default='1h', help="Data timeframe (for --create-edge, default: 1h)")
     parser.add_argument("--force", action="store_true", help="Force re-run even if analysis.json exists")
+    parser.add_argument("--workers", type=int, default=None, help="Number of worker processes (default: auto)")
     parser.add_argument("--quick", action="store_true", help="Skip chart generation (JSON only)")
     args = parser.parse_args()
 
@@ -60,6 +64,12 @@ def main():
         return
 
     if args.create_edge:
+        if args.long and args.short:
+            print('[error] An edge must be either long OR short, not both. Use --long OR --short.')
+            sys.exit(1)
+        if not args.long and not args.short:
+            print('[error] You must specify --long or --short formula.')
+            sys.exit(1)
         horizons = [int(h) for h in args.horizons.split(',')] if args.horizons else None
         filepath = generate_edge_file(
             name=args.create_edge,
@@ -67,8 +77,11 @@ def main():
             short_formula=args.short,
             horizons=horizons,
             description=args.desc or '',
+            metric=args.metric,
+            timeframe=args.timeframe,
         )
         print(f'[create-edge] Created {filepath}')
+        print(f'[create-edge] Metric: {args.metric}, Timeframe: {args.timeframe}')
         import_types = {'pd': __import__('pandas'), 'np': __import__('numpy'),
                         'eval_formula': __import__('formula_engine').eval_formula}
         ns = {**import_types, '__builtins__': __builtins__}
@@ -96,7 +109,8 @@ def main():
         df = compute_forward_returns(df, [1, 4, 6, 12, 24, 48, 72, 168])
         bt_path = str(Path(__file__).resolve())
         sm_path = str(Path(f'/tmp/edge_analysis/source_map_{args.symbol.replace("/", "_")}.json'))
-        results = validator.validate_all(df, sym_dir, bt_path, sm_path, n_workers=12, quick=True)
+        n_workers = args.workers or 12
+        results = validator.validate_all(df, sym_dir, bt_path, sm_path, n_workers=n_workers, quick=True)
         out_stem = f'oos_{args.symbol.replace("/", "_")}'
         validator.generate_summary(results, args.symbol, output_path=f'{out_stem}.txt')
         validator.save_csv(results, output_path=f'{out_stem}.csv')
@@ -104,15 +118,29 @@ def main():
 
     if args.list_edges:
         print("\nRegistered edges:")
-        print("-" * 60)
+        print("-" * 90)
+        print(f"  {'Name':40s} {'Dir':6s} {'Metric':20s} {'TF':6s} {'Horizons':20s}")
+        print("  " + "-" * 90)
         for name in sorted(_registry.keys()):
             edge = _registry[name]
-            desc = f" — {edge.description}" if edge.description else ""
-            print(f"  {name}{desc}")
+            direction = edge.direction[:4]
+            metric = edge.metric[:18]
+            tf = edge.timeframe
+            horiz = ','.join(str(h) for h in edge.close_horizons[:4])
+            if len(edge.close_horizons) > 4: horiz += '...'
+            print(f"  {name:40s} {direction:6s} {metric:20s} {tf:6s} {horiz:20s}")
         print()
         return
 
-    df = load_data(since=args.since, until=args.until, symbol=args.symbol)
+    # Load OHLCV + all available metrics so any edge can reference any column
+    if args.analyze:
+        extra_metrics = ['funding_rate', 'open_interest', 'taker_volume', 'long_short_ratio']
+        print(f'[data] Loading with all extra metrics at {args.timeframe}')
+        df = load_data(since=args.since, until=args.until, symbol=args.symbol,
+                       metric='ohlcv', timeframe=args.timeframe,
+                       extra_metrics=extra_metrics)
+    else:
+        df = load_data(since=args.since, until=args.until, symbol=args.symbol)
     REPORTS_DIR = f'reports_{args.symbol.replace("/", "_")}'
     HORIZONS = [1, 4, 6, 12, 24, 48, 72, 168]
     from analysis.core import compute_forward_returns
@@ -168,7 +196,7 @@ def main():
         bt_path = str(Path(__file__).resolve())
 
         from bt_engine.worker import _optimal_workers
-        n_workers = _optimal_workers(df, max_workers=os.cpu_count(), quick=args.quick)
+        n_workers = args.workers or _optimal_workers(df, max_workers=os.cpu_count(), quick=args.quick)
         set_shared_df(df)
         print(f"[analyze] Starting {len(edges)} edges with {n_workers} workers...")
         t0 = time.time()

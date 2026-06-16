@@ -238,16 +238,19 @@ def _oos_worker(args: tuple) -> Dict:
         return result
 
     # Register example edges
-    def momentum_sma20(d):
+    def momentum_sma20_long(d):
         sma20 = d['close'].rolling(20).mean().bfill()
-        s = pd.Series(0, index=d.index)
-        s[d['close'] > sma20] = 1
-        s[d['close'] < sma20] = -1
-        return s
-    register_edge(Edge(name="Price vs SMA20", entry_condition=momentum_sma20,
-                       close_horizons=[1, 6, 24],
+        return (d['close'] > sma20).astype(int)
+    register_edge(Edge(name="Price vs SMA20", entry_condition=momentum_sma20_long,
+                       direction='long', close_horizons=[1, 6, 24],
                        description="Long when close > SMA20"))
-    def rsi_condition(d, period=14):
+    def momentum_sma20_short(d):
+        sma20 = d['close'].rolling(20).mean().bfill()
+        return (-(d['close'] < sma20)).astype(int)
+    register_edge(Edge(name="Price vs SMA20 Short", entry_condition=momentum_sma20_short,
+                       direction='short', close_horizons=[1, 6, 24],
+                       description="Short when close < SMA20"))
+    def rsi_oversold_long(d, period=14):
         delta = d['close'].diff()
         gain = delta.clip(lower=0)
         loss = (-delta).clip(lower=0)
@@ -255,25 +258,38 @@ def _oos_worker(args: tuple) -> Dict:
         avg_l = loss.rolling(period).mean()
         rs = avg_g / avg_l
         rsi = 100 - (100 / (1 + rs))
-        s = pd.Series(0, index=d.index)
-        s[rsi < 30] = 1
-        s[rsi > 70] = -1
-        return s
-    register_edge(Edge(name="RSI 14 (30/70)", entry_condition=rsi_condition,
-                       close_horizons=[1, 6, 24],
+        return (rsi < 30).astype(int)
+    register_edge(Edge(name="RSI 14 Oversold", entry_condition=rsi_oversold_long,
+                       direction='long', close_horizons=[1, 6, 24],
                        description="Long when RSI < 30"))
-    def bb_condition(d, period=20, std=2.0):
+    def rsi_overbought_short(d, period=14):
+        delta = d['close'].diff()
+        gain = delta.clip(lower=0)
+        loss = (-delta).clip(lower=0)
+        avg_g = gain.rolling(period).mean()
+        avg_l = loss.rolling(period).mean()
+        rs = avg_g / avg_l
+        rsi = 100 - (100 / (1 + rs))
+        return (-(rsi > 70)).astype(int)
+    register_edge(Edge(name="RSI 14 Overbought Short", entry_condition=rsi_overbought_short,
+                       direction='short', close_horizons=[1, 6, 24],
+                       description="Short when RSI > 70"))
+    def bb_long(d, period=20, std=2.0):
+        sma = d['close'].rolling(period).mean()
+        sd = d['close'].rolling(period).std()
+        lower = sma - std * sd
+        return (d['close'] < lower).astype(int)
+    register_edge(Edge(name="Bollinger Bands (20,2)", entry_condition=bb_long,
+                       direction='long', close_horizons=[1, 6, 24],
+                       description="Long when close < lower band"))
+    def bb_short(d, period=20, std=2.0):
         sma = d['close'].rolling(period).mean()
         sd = d['close'].rolling(period).std()
         upper = sma + std * sd
-        lower = sma - std * sd
-        s = pd.Series(0, index=d.index)
-        s[d['close'] < lower] = 1
-        s[d['close'] > upper] = -1
-        return s
-    register_edge(Edge(name="Bollinger Bands (20,2)", entry_condition=bb_condition,
-                       close_horizons=[1, 6, 24],
-                       description="Long when close < lower band"))
+        return (-(d['close'] > upper)).astype(int)
+    register_edge(Edge(name="Bollinger Bands Short (20,2)", entry_condition=bb_short,
+                       direction='short', close_horizons=[1, 6, 24],
+                       description="Short when close > upper band"))
 
     # Load user edges
     edges_dir = Path(bt_path).parent / "edges"

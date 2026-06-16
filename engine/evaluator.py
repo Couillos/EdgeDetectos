@@ -117,11 +117,22 @@ def generate_edge_file(name: str, long_formula: Optional[str] = None,
                        short_formula: Optional[str] = None,
                        horizons: Optional[List[int]] = None,
                        description: str = '',
-                       output_dir: str = 'edges') -> str:
+                       output_dir: str = 'edges',
+                       metric: str = 'ohlcv',
+                       timeframe: str = '1h') -> str:
     if horizons is None:
         horizons = [1, 4, 6, 12, 24, 48, 72, 168]
     if not long_formula and not short_formula:
         raise ValueError('At least one of long_formula or short_formula is required')
+    if long_formula and short_formula:
+        raise ValueError('An edge must be either long OR short, not both. Use --long OR --short.')
+
+    if long_formula:
+        direction = 'long'
+        formula_str = long_formula
+    else:
+        direction = 'short'
+        formula_str = short_formula
 
     safe_name = re.sub(r'[^\w\s-]', '', name).strip().replace(' ', '_').replace('-', '_')
     if safe_name and safe_name[0].isdigit():
@@ -129,12 +140,17 @@ def generate_edge_file(name: str, long_formula: Optional[str] = None,
     filename = safe_name.lower() + '.py'
     filepath = Path(output_dir) / filename
 
+    if direction == 'long':
+        return_line = f'    return eval_formula({repr(formula_str)}, df)'
+    else:
+        return_line = f'    return -eval_formula({repr(formula_str)}, df)'
+
     lines = [
         '"""',
         f'{name}',
         'Generated edge from formula engine.',
-        f'{"Long: " + long_formula if long_formula else ""}',
-        f'{"Short: " + short_formula if short_formula else ""}',
+        f'{direction.title()}: {formula_str}',
+        f'Metric: {metric}, Timeframe: {timeframe}',
         '"""',
         '',
         'import pandas as pd',
@@ -143,21 +159,8 @@ def generate_edge_file(name: str, long_formula: Optional[str] = None,
         '',
         '',
         f'def {safe_name}_condition(df: pd.DataFrame) -> pd.Series:',
-    ]
-
-    if long_formula and short_formula:
-        lines.append(f'    long_sig = eval_formula({repr(long_formula)}, df)')
-        lines.append(f'    short_sig = eval_formula({repr(short_formula)}, df)')
-        lines.append('    signals = pd.Series(0, index=df.index)')
-        lines.append('    signals[long_sig.astype(bool)] = 1')
-        lines.append('    signals[short_sig.astype(bool)] = -1')
-        lines.append('    return signals')
-    elif long_formula:
-        lines.append(f'    return eval_formula({repr(long_formula)}, df)')
-    else:
-        lines.append(f'    return -eval_formula({repr(short_formula)}, df)')
-
-    lines.extend([
+        f'    """Return 1 for {direction} signal, 0 otherwise."""',
+        return_line,
         '',
         '',
         'def register():',
@@ -167,9 +170,12 @@ def generate_edge_file(name: str, long_formula: Optional[str] = None,
         f'        entry_condition={safe_name}_condition,',
         f'        close_horizons={horizons},',
         f'        description={repr(description)},',
+        f'        direction={repr(direction)},',
+        f'        metric={repr(metric)},',
+        f'        timeframe={repr(timeframe)},',
         '    ))',
         '',
-    ])
+    ]
 
     filepath.write_text('\n'.join(lines) + '\n')
     return str(filepath)
@@ -196,7 +202,17 @@ def list_indicators():
 
     lines.append('')
     lines.append('=' * 70)
-    lines.append('BUILT-IN REFERENCES: open, high, low, close, volume')
+    lines.append('BUILT-IN REFERENCES (OHLCV): open, high, low, close, volume')
+    lines.append('')
+    lines.append('MARKET METRICS (use --metric to specify):')
+    lines.append('  ohlcv              OHLCV (open, high, low, close, volume)')
+    lines.append('  funding_rate       Binance Futures (funding_rate, mark_price)')
+    lines.append('  open_interest      Bybit (open_interest, open_interest_usd)')
+    lines.append('  taker_volume       Binance (taker_buy_*, taker_sell_*)')
+    lines.append('  long_short_ratio   Bybit (buy_ratio, sell_ratio, ls_ratio)')
+    lines.append('')
+    lines.append('When --metric is specified, those columns are merged into the DataFrame')
+    lines.append('and can be referenced directly in formulas (e.g. funding_rate > -0.01).')
     lines.append('')
     lines.append('OPERATORS: +, -, *, /, <, >, <=, >=, ==, !=, &, |')
     lines.append('SHIFT: close.shift(6)')
@@ -207,6 +223,8 @@ def list_indicators():
     lines.append('  consecutive_red(3)')
     lines.append('  close > ema(close, 50) & macd_hist(close) > 0')
     lines.append('  close < donchian_lower(close, 20)')
+    lines.append('  funding_rate < -0.01 & close > sma(close, 20)')
+    lines.append('  open_interest > open_interest.shift(24) & close > ema(close, 50)')
     lines.append('=' * 70)
 
     return '\n'.join(lines)
