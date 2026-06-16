@@ -95,6 +95,7 @@ def serve_index():
 
 BT_PATH = str(PROJECT_ROOT / 'backtest.py')
 HORIZONS = [1, 4, 6, 12, 24, 48, 72, 168]
+EXTRA_METRICS = ['funding_rate', 'open_interest', 'taker_volume', 'long_short_ratio']
 
 
 def _safe_name(name: str) -> str:
@@ -602,7 +603,7 @@ async def _run_analysis(task_id: str, body: AnalyzeRequest):
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
         for sym_idx, symbol in enumerate(symbols):
-            df = load_data(since=body.since, until=body.until, symbol=symbol)
+            df = load_data(since=body.since, until=body.until, symbol=symbol, extra_metrics=EXTRA_METRICS)
             df = compute_forward_returns(df, HORIZONS)
             sym_slug = _symbol_slug(symbol)
             reports_dir_name = _reports_dir(symbol)
@@ -756,7 +757,7 @@ async def _run_oos(task_id: str, body: OOSValidateRequest):
     def _do_oos():
         sym_slug = _symbol_slug(body.symbol)
         rd = _reports_dir(body.symbol)
-        df = load_data(since=body.since, until=body.until, symbol=body.symbol)
+        df = load_data(since=body.since, until=body.until, symbol=body.symbol, extra_metrics=EXTRA_METRICS)
         df = compute_forward_returns(df, HORIZONS)
         tmp_dir = Path('/tmp/edge_analysis')
         tmp_dir.mkdir(parents=True, exist_ok=True)
