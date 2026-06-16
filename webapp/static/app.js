@@ -6,6 +6,7 @@ function _saveState() {
     oosFilters: state.oosFilters, oosSort: state.oosSort, oosSymbol: state.oosSymbol,
     dashboardSymbols: state.dashboardSymbols,
     detailSymbol: state.detailSymbol,
+    rankingSymbol: state.rankingSymbol,
   };
   try { localStorage.setItem(LS_KEY, JSON.stringify(saveable)); } catch (_) {}
 }
@@ -18,7 +19,7 @@ function _loadState() {
   } catch (_) {}
 }
 
-const state = { edges: [], symbols: [], currentTask: null, selectedEdges: new Set(), sortBy: 'name', sortOrder: 'asc', page: 1, perPage: 50, search: '', status: 'all', symbol: '', dashboardSymbols: [], detailSymbol: 'BTC/USDT', rankFilters: { name: '', verdict: '', scoreMin: '', scoreMax: '', sharpeMin: '', sharpeMax: '', winrateMin: '', winrateMax: '', trMin: '', trMax: '', sigMin: '', sigMax: '', breadthMin: '', breadthMax: '', tpMin: '', tpMax: '', mcpMin: '', mcpMax: '', kspMin: '', kspMax: '' }, rankSort: { col: 'score', dir: 'desc' }, oosFilters: { name: '', verdict: '', isScMin: '', isScMax: '', oosScMin: '', oosScMax: '', finalScMin: '', finalScMax: '', decMin: '', decMax: '', isShMin: '', isShMax: '', oosShMin: '', oosShMax: '', oosWrMin: '', oosWrMax: '', oosTpMin: '', oosTpMax: '', oosMcpMin: '', oosMcpMax: '', distKspMin: '', distKspMax: '' }, oosSort: { col: 'final_score', dir: 'desc' }, oosSymbol: 'BTC/USDT' };
+const state = { edges: [], symbols: [], currentTask: null, selectedEdges: new Set(), sortBy: 'name', sortOrder: 'asc', page: 1, perPage: 50, search: '', status: 'all', symbol: '', dashboardSymbols: [], detailSymbol: 'BTC/USDT', rankingSymbol: 'BTC/USDT', rankFilters: { name: '', verdict: '', scoreMin: '', scoreMax: '', sharpeMin: '', sharpeMax: '', winrateMin: '', winrateMax: '', trMin: '', trMax: '', sigMin: '', sigMax: '', breadthMin: '', breadthMax: '', tpMin: '', tpMax: '', mcpMin: '', mcpMax: '', kspMin: '', kspMax: '' }, rankSort: { col: 'score', dir: 'desc' }, oosFilters: { name: '', verdict: '', isScMin: '', isScMax: '', oosScMin: '', oosScMax: '', finalScMin: '', finalScMax: '', decMin: '', decMax: '', isShMin: '', isShMax: '', oosShMin: '', oosShMax: '', oosWrMin: '', oosWrMax: '', oosTpMin: '', oosTpMax: '', oosMcpMin: '', oosMcpMax: '', distKspMin: '', distKspMax: '' }, oosSort: { col: 'final_score', dir: 'desc' }, oosSymbol: 'BTC/USDT' };
 _loadState();
 const events = { _listeners: {}, on(e, fn) { (this._listeners[e] = this._listeners[e] || []).push(fn); }, emit(e, data) { (this._listeners[e] || []).forEach(fn => fn(data)); } };
 const api = {
@@ -63,7 +64,10 @@ function toast(msg, type = 'info') {
 }
 
 /* Progress bar */
+let _hideTimer = null;
+
 function showProgress(label, total) {
+  if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null; }
   state.currentTask = { label, total, completed: 0, skipped: 0, failed: 0, start: Date.now() };
   const bar = document.getElementById('progress-bar');
   bar.classList.add('visible');
@@ -79,11 +83,17 @@ function updateProgress() {
   qs('#progress-label').textContent = t.label;
   qs('#progress-stats').textContent = `${done}/${total} done (${processed} total, ${skipped} skipped, ${failed} failed)`;
   qs('#progress-fill').style.width = pct + '%';
-  qs('#progress-elapsed').textContent = `${elapsed}s`;
+  qs('#progress-pct').textContent = Math.round(pct) + '%';
+  qs('#progress-elapsed').textContent = elapsed + 's';
 }
 function hideProgress() {
+  if (_hideTimer) clearTimeout(_hideTimer);
   const bar = document.getElementById('progress-bar');
-  setTimeout(() => { bar.classList.remove('visible'); state.currentTask = null; }, 2000);
+  _hideTimer = setTimeout(() => {
+    _hideTimer = null;
+    bar.classList.remove('visible');
+    state.currentTask = null;
+  }, 2000);
 }
 
 /* SSE */
@@ -206,7 +216,11 @@ function renderPage(route, container) {
 async function renderDashboard(container) {
   container.innerHTML = '<div class="flex justify-center" style="padding:60px"><div class="spinner"></div></div>';
   try {
-    const symbols = await api.get('/api/symbols');
+    const [symbols, cpuData] = await Promise.all([
+      api.get('/api/symbols'),
+      api.get('/api/cpu-cores').catch(() => ({ cores: 4 })),
+    ]);
+    const maxCores = cpuData.cores;
     // Restore selection: if empty and symbols exist, default to all
     if (state.dashboardSymbols.length === 0 && symbols.length > 0) {
       state.dashboardSymbols = [...symbols];
@@ -259,16 +273,20 @@ async function renderDashboard(container) {
     selContainer.append(select);
     container.append(selContainer);
 
-    const cards = $el('div', { className: 'cards-grid' },
-      $el('div', { className: 'card' }, $el('div', { className: 'card-value' }, String(total)), $el('div', { className: 'card-label' }, 'Total Edges')),
-      $el('div', { className: 'card' }, $el('div', { className: 'card-value text-green' }, String(analyzed)), $el('div', { className: 'card-label' }, 'Analyzed')),
-      $el('div', { className: 'card' }, $el('div', { className: 'card-value text-yellow' }, String(pending)), $el('div', { className: 'card-label' }, 'Pending')),
-      $el('div', { className: 'card' }, $el('div', { className: 'card-value text-blue' }, String(symbols.length)), $el('div', { className: 'card-label' }, 'Symbols')),
+    const cards = $el('div', { className: 'card', style: { padding: '12px 4px' } },
+      $el('div', { className: 'kpi-group' },
+        $el('div', { className: 'kpi-item' }, $el('div', { className: 'kpi-value' }, String(total)), $el('div', { className: 'kpi-label' }, 'Total')),
+        $el('div', { className: 'kpi-item' }, $el('div', { className: 'kpi-value', style: { color: 'var(--accent-green)' } }, String(analyzed)), $el('div', { className: 'kpi-label' }, 'Analyzed')),
+        $el('div', { className: 'kpi-item' }, $el('div', { className: 'kpi-value', style: { color: 'var(--accent-yellow)' } }, String(pending)), $el('div', { className: 'kpi-label' }, 'Pending')),
+        $el('div', { className: 'kpi-item' }, $el('div', { className: 'kpi-value', style: { color: 'var(--accent-blue)' } }, String(symbols.length)), $el('div', { className: 'kpi-label' }, 'Symbols')),
+      )
     );
     container.append(cards);
 
-    const actions = $el('div', { className: 'flex gap-8', style: { marginBottom: '24px' } },
-      $el('button', { className: 'btn btn-primary', onclick: () => startAnalysis(null, true, false, selSymbols) },
+    const actions = $el('div', { className: 'flex gap-8', style: { marginBottom: '24px', alignItems: 'center' } },
+      $el('label', { style: { fontSize: '12px', color: 'var(--text-secondary)' } }, 'Workers:'),
+      $el('input', { id: 'dash-workers', type: 'number', min: 1, max: maxCores, value: Math.max(1, maxCores - 1), style: { width: '60px', padding: '4px 6px', fontSize: '12px' } }),
+      $el('button', { className: 'btn btn-primary', onclick: () => startAnalysis(null, true, false, selSymbols, parseInt(document.getElementById('dash-workers').value) || null) },
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><polygon points="5 3 19 12 5 21 5 3"/></svg> Analyze All'
       ),
       $el('button', { className: 'btn', onclick: () => navigate('/ranking') }, 'View Ranking'),
@@ -465,6 +483,75 @@ async function renderEdgeList(container) {
   loadEdges();
 }
 
+/* Python syntax highlighting — single-pass tokenizer */
+function highlightPython(code) {
+  const tokens = [];
+  let i = 0;
+  while (i < code.length) {
+    // Comment
+    if (code[i] === '#' && (i === 0 || code[i-1] !== '\\')) {
+      let end = i;
+      while (end < code.length && code[end] !== '\n') end++;
+      tokens.push({ t: 'comment', v: code.slice(i, end) });
+      i = end;
+      continue;
+    }
+    // Triple-quoted string
+    if ((code[i] === '"' && code[i+1] === '"' && code[i+2] === '"') ||
+        (code[i] === "'" && code[i+1] === "'" && code[i+2] === "'")) {
+      const q = code.slice(i, i+3);
+      let end = i + 3;
+      while (end < code.length - 2 && !(code[end] === q[0] && code[end+1] === q[0] && code[end+2] === q[0])) end++;
+      end = Math.min(end + 3, code.length);
+      tokens.push({ t: 'string', v: code.slice(i, end) });
+      i = end;
+      continue;
+    }
+    // Single/double quoted string
+    if (code[i] === '"' || code[i] === "'") {
+      const q = code[i];
+      let end = i + 1;
+      while (end < code.length && !(code[end] === q && code[end-1] !== '\\')) end++;
+      end = Math.min(end + 1, code.length);
+      tokens.push({ t: 'string', v: code.slice(i, end) });
+      i = end;
+      continue;
+    }
+    // Keyword
+    if (/[a-zA-Z_]/.test(code[i])) {
+      let end = i;
+      while (end < code.length && /[a-zA-Z0-9_]/.test(code[end])) end++;
+      const word = code.slice(i, end);
+      const kw = ['def','class','return','import','from','if','elif','else','for','while','in','not','and','or','is','None','True','False','try','except','finally','with','as','pass','break','continue','raise','yield','lambda','async','await','self'];
+      if (kw.includes(word)) tokens.push({ t: 'keyword', v: word });
+      else tokens.push({ t: 'text', v: word });
+      i = end;
+      continue;
+    }
+    // Number
+    if (/[0-9]/.test(code[i])) {
+      let end = i;
+      while (end < code.length && /[0-9.]/.test(code[end])) end++;
+      tokens.push({ t: 'number', v: code.slice(i, end) });
+      i = end;
+      continue;
+    }
+    // Other (operators, whitespace, etc.)
+    tokens.push({ t: 'text', v: code[i] });
+    i++;
+  }
+  return tokens.map(t => {
+    const v = t.v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    switch (t.t) {
+      case 'comment': return `<span class="syn-comment">${v}</span>`;
+      case 'string':  return `<span class="syn-string">${v}</span>`;
+      case 'keyword': return `<span class="syn-keyword">${v}</span>`;
+      case 'number':  return `<span class="syn-number">${v}</span>`;
+      default:        return v;
+    }
+  }).join('');
+}
+
 /* ============ EDGE DETAIL ============ */
 async function renderEdgeDetail(container, name) {
   container.innerHTML = '<div class="flex justify-center" style="padding:60px"><div class="spinner"></div></div>';
@@ -505,8 +592,31 @@ async function renderEdgeDetail(container, name) {
     );
     container.append(header);
 
-    // Horizon stats table
+    // Analysis report image FIRST
     const horizons = edge.horizons;
+    if (horizons && Object.keys(horizons).length > 0) {
+      const reportSection = $el('div', { className: 'detail-section' },
+        $el('h2', {}, 'Analysis Report'),
+      );
+      if (edge.report_png) {
+        const wrap = $el('div', { className: 'report-image-wrap' });
+        const symParam = state.detailSymbol ? `?symbol=${encodeURIComponent(state.detailSymbol)}` : '';
+        const img = $el('img', { src: edge.report_png + symParam, alt: `Report for ${edge.signal_name}`, style: { width: '100%', maxWidth: '1200px', display: 'block', margin: '0 auto', border: '1px solid var(--border)', borderRadius: '8px' } });
+        img.onerror = () => {
+          wrap.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:14px">Report image not available (analysis was run with --quick).</div>';
+        };
+        wrap.appendChild(img);
+        reportSection.appendChild(wrap);
+      } else {
+        reportSection.appendChild($el('div', { style: { padding: '20px', textAlign: 'center', color: 'var(--text-secondary)' } },
+          'No report image generated yet.',
+          $el('button', { className: 'btn btn-sm', style: { marginLeft: '8px' }, onclick: () => startAnalysis([edge.signal_name], true, false, [state.detailSymbol]) }, 'Generate Report')
+        ));
+      }
+      container.append(reportSection);
+    }
+
+    // Horizon stats table SECOND
     if (horizons && Object.keys(horizons).length) {
       const section = $el('div', { className: 'detail-section' },
         $el('h2', {}, 'Horizon Stats'),
@@ -536,28 +646,38 @@ async function renderEdgeDetail(container, name) {
       container.append(section);
     }
 
-    // Analysis report image
-    if (horizons && Object.keys(horizons).length > 0) {
-      const reportSection = $el('div', { className: 'detail-section' },
-        $el('h2', {}, 'Analysis Report'),
-      );
-      if (edge.report_png) {
-        const wrap = $el('div', { className: 'report-image-wrap' });
-        const symParam = state.detailSymbol ? `?symbol=${encodeURIComponent(state.detailSymbol)}` : '';
-        const img = $el('img', { src: edge.report_png + symParam, alt: `Report for ${edge.signal_name}`, style: { width: '100%', maxWidth: '1200px', display: 'block', margin: '0 auto', border: '1px solid var(--border)', borderRadius: '8px' } });
-        img.onerror = () => {
-          wrap.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:14px">Report image not available (analysis was run with --quick).</div>';
-        };
-        wrap.appendChild(img);
-        reportSection.appendChild(wrap);
-      } else {
-        reportSection.appendChild($el('div', { style: { padding: '20px', textAlign: 'center', color: 'var(--text-secondary)' } },
-          'No report image generated yet.',
-          $el('button', { className: 'btn btn-sm', style: { marginLeft: '8px' }, onclick: () => startAnalysis([edge.signal_name], true, false, [state.detailSymbol]) }, 'Generate Report')
-        ));
-      }
-      container.append(reportSection);
-    }
+    // Source code viewer
+    const codeSection = $el('div', { className: 'detail-section' },
+      $el('h2', { style: { cursor: 'pointer', userSelect: 'none' }, onclick: function() {
+        const body = this.parentNode.querySelector('.code-body');
+        const icon = this.parentNode.querySelector('.collapse-icon');
+        if (body.style.display === 'none') {
+          body.style.display = 'block';
+          icon.textContent = '▼';
+        } else {
+          body.style.display = 'none';
+          icon.textContent = '▶';
+        }
+      } },
+        $el('span', { className: 'collapse-icon', style: { display: 'inline-block', width: '16px', marginRight: '4px', fontSize: '11px' } }, '▶'),
+        'Source Code',
+      ),
+      $el('div', { className: 'code-body', style: { display: 'none' } },
+        $el('div', { style: { fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '4px' } }, 'Loading...'),
+      ),
+    );
+    container.append(codeSection);
+    // Fetch source code
+    api.get(`/api/edge-source/${encodeURIComponent(name)}`).then(srcData => {
+      const body = codeSection.querySelector('.code-body');
+      body.innerHTML = '';
+      const pre = $el('pre', { className: 'code-block', style: { margin: 0, overflow: 'auto', maxHeight: '500px' } });
+      pre.innerHTML = `<code>${highlightPython(srcData.source)}</code>`;
+      body.append(pre);
+    }).catch(() => {
+      const body = codeSection.querySelector('.code-body');
+      body.innerHTML = '<div style="padding:8px 0;font-size:12px;color:var(--text-secondary)">Source file not available.</div>';
+    });
 
     // Persistence
     if (edge.persistence) {
@@ -610,10 +730,6 @@ async function renderRanking(container) {
     ),
   );
   container.append(toolbar);
-  const chartDiv = $el('div', { className: 'chart-container' },
-    $el('canvas', { id: 'ranking-chart' })
-  );
-  container.append(chartDiv);
   const filterBar = $el('div', { className: 'filter-bar', id: 'rank-filter-bar' });
   container.append(filterBar);
   const tableDiv = $el('div', { className: 'table-wrap', id: 'ranking-table-wrap' });
@@ -714,14 +830,10 @@ async function renderRanking(container) {
 
   async function loadRanking() {
     const symbol = document.getElementById('ranking-symbol').value;
-    chartDiv.innerHTML = '<div class="flex justify-center" style="padding:40px"><div class="spinner"></div></div>';
     tableDiv.innerHTML = '';
     try {
       const data = await api.get(`/api/ranking?symbol=${encodeURIComponent(symbol)}`);
       edges = data.edges || [];
-      chartDiv.innerHTML = '';
-      chartDiv.append($el('canvas', { id: 'ranking-chart' }));
-      renderRankingChart();
       buildRankFilters();
       const table = $el('table', { className: 'data-table' },
         $el('thead', {},
@@ -740,41 +852,8 @@ async function renderRanking(container) {
       tableDiv.append($el('div', { id: 'rank-info', style: { fontSize: '12px', color: 'var(--text-secondary)', margin: '8px 0' } }), table);
       refreshRank();
     } catch (e) {
-      chartDiv.innerHTML = `<div class="empty-state"><h3>Error loading ranking</h3><p>${e.message}</p></div>`;
+      tableDiv.innerHTML = `<div class="empty-state"><h3>Error loading ranking</h3><p>${e.message}</p></div>`;
     }
-  }
-
-  function renderRankingChart() {
-    setTimeout(() => {
-      const canvas = document.getElementById('ranking-chart');
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (state.charts.ranking) { state.charts.ranking.destroy(); }
-      const top25 = edges.slice(0, 25).reverse();
-      const colors = top25.map(e => {
-        if (e.verdict === 'STRONG') return '#3fb950';
-        if (e.verdict === 'PASS') return '#58a6ff';
-        if (e.verdict === 'WEAK') return '#d29922';
-        return '#f85149';
-      });
-      state.charts.ranking = new Chart(ctx, {
-        type: 'bar', data: {
-          labels: top25.map(e => e.name.length > 28 ? e.name.slice(0, 28) + '…' : e.name),
-          datasets: [{ data: top25.map(e => e.score || 0), backgroundColor: colors, borderColor: colors, borderWidth: 1 }]
-        },
-        options: {
-          indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-          plugins: {
-            legend: { display: false }, tooltip: { callbacks: { label: (ctx) => { const e = top25[ctx.dataIndex]; return `Score: ${num(e.score)} | Sig: ${e.sig} | Breadth: ${e.breadth} | Sharpe: ${num(e.sharpe)}`; } } }
-          },
-          scales: {
-            x: { grid: { color: '#30363d' }, ticks: { color: '#8b949e' } },
-            y: { ticks: { color: '#8b949e', font: { size: 9 } }, grid: { display: false } }
-          },
-          onClick: (_, els) => { if (els.length) { const edge = edges[top25.length - 1 - els[0].datasetIndex]; if (edge) navigate(`/edges/${encodeURIComponent(edge.name)}`); } }
-        }
-      });
-    }, 50);
   }
 
   // Load symbols
@@ -783,19 +862,28 @@ async function renderRanking(container) {
     const sel = document.getElementById('ranking-symbol');
     sel.innerHTML = '';
     syms.forEach(s => sel.append($el('option', { value: s }, s)));
+    sel.value = state.rankingSymbol || 'BTC/USDT';
   } catch (_) {}
-  document.getElementById('ranking-symbol').addEventListener('change', loadRanking);
+  document.getElementById('ranking-symbol').addEventListener('change', () => {
+    state.rankingSymbol = document.getElementById('ranking-symbol').value;
+    _saveState();
+    loadRanking();
+  });
   loadRanking();
 }
 
 /* ============ OOS ============ */
 async function renderOOS(container) {
   container.innerHTML = '';
+  const cpuData = await api.get('/api/cpu-cores').catch(() => ({ cores: 4 }));
+  const maxCores = cpuData.cores;
   const toolbar = $el('div', { className: 'toolbar' },
     $el('select', { id: 'oos-symbol', className: 'form-select', style: { width: 'auto', minWidth: '160px' } },
       $el('option', { value: 'BTC/USDT' }, 'BTC/USDT')
     ),
-    $el('button', { className: 'btn btn-primary', onclick: () => startOOS(document.getElementById('oos-symbol').value) }, 'Run OOS Validation'),
+    $el('label', { style: { fontSize: '12px', color: 'var(--text-secondary)', marginLeft: '12px' } }, 'Workers:'),
+    $el('input', { id: 'oos-workers', type: 'number', min: 1, max: maxCores, value: Math.max(1, maxCores - 1), style: { width: '60px', padding: '4px 6px', fontSize: '12px' } }),
+    $el('button', { className: 'btn btn-primary', onclick: () => startOOS(document.getElementById('oos-symbol').value, parseInt(document.getElementById('oos-workers').value) || null) }, 'Run OOS Validation'),
   );
   container.append(toolbar);
   const verdictDiv = $el('div', { className: 'oos-verdicts', id: 'oos-verdicts' });
@@ -915,14 +1003,15 @@ async function renderOOS(container) {
         { key: 'weak', label: 'WEAK', count: verdicts.WEAK || 0, cls: 'weak' },
         { key: 'fail', label: 'FAIL', count: verdicts.FAIL || 0, cls: 'fail' },
       ];
-      vData.forEach(v => {
-        verdictDiv.append(
+      verdictDiv.className = 'oos-verdicts single-card';
+      verdictDiv.append($el('div', { className: 'card', style: { padding: '8px 0', display: 'flex' } },
+        ...vData.map(v =>
           $el('div', { className: `oos-card ${v.cls}` },
             $el('div', { className: 'count' }, String(v.count)),
             $el('div', { className: 'label' }, v.label),
           )
-        );
-      });
+        )
+      ));
       buildOOSFilters();
       const table = $el('table', { className: 'data-table' },
         $el('thead', {},
@@ -1073,7 +1162,7 @@ async function renderCreateEdge(container) {
 }
 
 /* ============ ANALYSIS / OOS TRIGGER ============ */
-function startAnalysis(edgeNames, force = false, quick = false, symbols = null) {
+function startAnalysis(edgeNames, force = false, quick = false, symbols = null, workers = null) {
   const names = Array.isArray(edgeNames) ? edgeNames : null;
   if (symbols == null) {
     symbols = state.dashboardSymbols.length > 0 ? state.dashboardSymbols : [state.symbol || 'BTC/USDT'];
@@ -1088,10 +1177,14 @@ function startAnalysis(edgeNames, force = false, quick = false, symbols = null) 
     edge_name: names && names.length === 1 ? names[0] : null,
     quick,
     force,
+    workers,
     since: '2020-01-01',
     until: '2026-06-13'
   }).then(resp => {
-    try { sessionStorage.setItem('active_task', JSON.stringify({ url: `/api/analyze/${resp.task_id}/progress`, type: 'analyze' })); } catch (_) {}
+    try {
+      const t = state.currentTask;
+      sessionStorage.setItem('active_task', JSON.stringify({ url: `/api/analyze/${resp.task_id}/progress`, type: 'analyze', label: t?.label, total: t?.total, completed: t?.completed }));
+    } catch (_) {}
     connectSSE(`/api/analyze/${resp.task_id}/progress`, null, () => {
       try { sessionStorage.removeItem('active_task'); } catch (_) {}
       const route = getRoute();
@@ -1109,10 +1202,13 @@ function startAnalysis(edgeNames, force = false, quick = false, symbols = null) 
   });
 }
 
-function startOOS(symbol) {
-  showProgress('Running OOS Validation', 100);
-  api.post('/api/oos-validate', { symbol, since: '2020-01-01', until: '2026-06-13' }).then(resp => {
-    try { sessionStorage.setItem('active_task', JSON.stringify({ url: `/api/oos-validate/${resp.task_id}/progress`, type: 'oos' })); } catch (_) {}
+function startOOS(symbol, workers = null) {
+  showProgress('Running OOS Validation', 0);
+  api.post('/api/oos-validate', { symbol, since: '2020-01-01', until: '2026-06-13', workers }).then(resp => {
+    try {
+      const t = state.currentTask;
+      sessionStorage.setItem('active_task', JSON.stringify({ url: `/api/oos-validate/${resp.task_id}/progress`, type: 'oos', label: t?.label, total: t?.total, completed: t?.completed }));
+    } catch (_) {}
     connectSSE(`/api/oos-validate/${resp.task_id}/progress`, null, () => {
       try { sessionStorage.removeItem('active_task'); } catch (_) {}
       const route = getRoute();
@@ -1137,6 +1233,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ),
     $el('div', { className: 'progress-info' },
       $el('span', { id: 'progress-elapsed', style: { fontSize: '11px', color: 'var(--text-secondary)' } }, ''),
+      $el('span', { id: 'progress-pct', style: { fontSize: '11px', fontWeight: 600, marginLeft: '8px', color: 'var(--accent-blue)' } }, ''),
     ),
     $el('div', { className: 'progress-track' },
       $el('div', { id: 'progress-fill', className: 'progress-fill' }),
@@ -1152,12 +1249,17 @@ document.addEventListener('DOMContentLoaded', () => {
   try {
     const active = JSON.parse(sessionStorage.getItem('active_task'));
     if (active && active.url) {
-      state.currentTask = { label: 'Reconnecting...', total: 0, completed: 0, skipped: 0, failed: 0, start: Date.now() };
+      state.currentTask = { label: active.label || 'Reconnecting...', total: active.total || 0, completed: active.completed || 0, skipped: 0, failed: 0, start: Date.now() };
       const bar = document.getElementById('progress-bar');
       bar.classList.add('visible');
       updateProgress();
-      // Try to reconnect — first progress event updates total/label
+      // Try to reconnect — if stale (404), clean up after 6s timeout
+      const reconnectTimer = setTimeout(() => {
+        try { sessionStorage.removeItem('active_task'); } catch (_) {}
+        hideProgress();
+      }, 6000);
       connectSSE(active.url, null, () => {
+        clearTimeout(reconnectTimer);
         try { sessionStorage.removeItem('active_task'); } catch (_) {}
         hideProgress();
       });

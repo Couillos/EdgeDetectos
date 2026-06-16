@@ -125,10 +125,18 @@ def _oos_worker(args: tuple) -> Dict:
     # Run signal on OOS
     df_oos = compute_forward_returns(df_oos, horizons)
     df_oos = df_oos.copy()
-    signals = edge.entry_condition(df_oos)
-    df_oos['signal'] = signals
+    try:
+        signals = edge.entry_condition(df_oos)
+        df_oos['signal'] = signals
+    except Exception as e:
+        result['verdict_detail'] = f'Signal computation failed: {e}'
+        return result
 
-    oos_analysis = analyze_signal(df_oos, 'signal', horizons)
+    try:
+        oos_analysis = analyze_signal(df_oos, 'signal', horizons)
+    except Exception as e:
+        result['verdict_detail'] = f'Analysis failed: {e}'
+        return result
     oos_best_h = oos_analysis.get('best_horizon')
     oos_best_s = {}
     if oos_best_h and oos_best_h in oos_analysis.get('horizon_stats', {}):

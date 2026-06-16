@@ -266,12 +266,14 @@ class AnalyzeRequest(BaseModel):
     edge_name: Optional[str] = None
     quick: bool = False
     force: bool = False
+    workers: Optional[int] = None  # None = auto
 
 
 class OOSValidateRequest(BaseModel):
     symbol: str = 'BTC/USDT'
     since: str = '2020-01-01'
     until: str = '2026-06-13'
+    workers: Optional[int] = None  # None = auto
 
 
 class CreateEdgeRequest(BaseModel):
@@ -340,6 +342,26 @@ def edge_detail(name: str, symbol: str = 'BTC/USDT'):
     aj['report_png'] = _edge_report_png_url(name)
     aj['has_analysis'] = True
     return _clean_json(aj)
+
+
+# ─── GET /api/edges/{name}/source ──────────────────────────────────────
+
+@app.get('/api/edge-source/{name:path}')
+def edge_source(name: str):
+    name = unquote(name)
+    edge = get_edge(name)
+    if not edge:
+        raise HTTPException(404, f"Edge '{name}' not found")
+    edges_dir = PROJECT_ROOT / 'edges'
+    if not edges_dir.exists():
+        raise HTTPException(404, f"Edges directory not found")
+    for pyfile in sorted(edges_dir.glob('*.py')):
+        if pyfile.name in ('__init__.py',) or pyfile.name.startswith('_'):
+            continue
+        content = pyfile.read_text()
+        if f"'{name}'" in content or f'"{name}"' in content:
+            return {'source': content, 'filename': pyfile.name}
+    raise HTTPException(404, f"Source file not found for '{name}'")
 
 
 # ─── GET /api/report/{name}/json ──────────────────────────────────────
@@ -509,6 +531,13 @@ _analysis_tasks: dict = {}
 _oos_tasks: dict = {}
 
 
+# ─── GET /api/cpu-cores ──────────────────────────────────────────────
+
+@app.get('/api/cpu-cores')
+def get_cpu_cores():
+    return {'cores': os.cpu_count() or 4}
+
+
 # ─── POST /api/analyze ────────────────────────────────────────────────
 
 @app.post('/api/analyze')
@@ -604,7 +633,10 @@ async def _run_analysis(task_id: str, body: AnalyzeRequest):
 
             # Share DataFrame via fork inheritance — workers avoid reloading from parquet
             set_shared_df(df)
-            n_workers = _optimal_workers(df, max_workers=os.cpu_count())
+            if body.workers is not None:
+                n_workers = max(1, min(body.workers, os.cpu_count() or 4))
+            else:
+                n_workers = max(1, _optimal_workers(df, max_workers=os.cpu_count()) - 1)
 
             with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as pool:
                 futs = []
@@ -625,6 +657,7 @@ async def _run_analysis(task_id: str, body: AnalyzeRequest):
                         task['failed'] += 1
                         ename = result[6:].strip()
                     processed = task['completed'] + task['skipped'] + task['failed']
+                    log.info(f"[analyze {processed}/{len(futs)}] {ename} ({elapsed}s)")
                     task['updates'].append({
                         'type': 'progress', 'edge_name': f'[{symbol}] {ename}',
                         'completed': task['completed'], 'total': task['total'],
@@ -649,6 +682,11 @@ async def _run_analysis(task_id: str, body: AnalyzeRequest):
         }
         for sym in symbols:
             _rebuild_cache_for_symbol(sym)
+            # Invalidate stale OOS CSV so next /api/oos/{symbol} reflects fresh data
+            oos_csv = PROJECT_ROOT / f'oos_{_symbol_slug(sym)}.csv'
+            if oos_csv.exists():
+                oos_csv.unlink()
+                log.info(f"Purged stale OOS CSV for {sym}")
 
     try:
         await loop.run_in_executor(None, _do_analysis)
@@ -747,25 +785,34 @@ async def _run_oos(task_id: str, body: OOSValidateRequest):
         with open(sm_path, 'w') as f:
             json.dump(source_map, f)
 
-        validator = OOSValidator()
         reports_path = str(PROJECT_ROOT / rd)
-        results = validator.validate_all(df, reports_path, BT_PATH, sm_path,
-                                         n_workers=os.cpu_count() or 4, quick=True)
+        # Count edges so total is known before validation starts
+        reports_dir_path = Path(reports_path)
+        edge_count = 0
+        if reports_dir_path.exists():
+            for subdir in sorted(reports_dir_path.iterdir()):
+                if (subdir / 'analysis.json').exists():
+                    edge_count += 1
+        task['total'] = edge_count
 
-        task['total'] = len(results)
-        for i, r in enumerate(results):
-            task['completed'] = i + 1
-            elapsed = round(time.time() - task['start_time'], 1)
-            verdict = r.get('verdict', 'FAIL')
+        def _oos_progress(i, result):
+            task['completed'] = i
+            verdict = result.get('verdict', 'FAIL')
             task['updates'].append({
                 'type': 'progress',
-                'edge_name': r.get('edge_name', '?'),
-                'completed': task['completed'],
-                'total': task['total'],
+                'edge_name': result.get('edge_name', '?'),
+                'completed': i,
+                'total': edge_count,
                 'status': 'done',
                 'verdict': verdict,
-                'elapsed': elapsed,
+                'elapsed': round(time.time() - task['start_time'], 1),
             })
+
+        oos_workers = body.workers if body.workers is not None else max(1, (os.cpu_count() or 4) - 1)
+        validator = OOSValidator()
+        results = validator.validate_all(df, reports_path, BT_PATH, sm_path,
+                                         n_workers=oos_workers, quick=True,
+                                         progress_callback=_oos_progress)
 
         out_stem = str(PROJECT_ROOT / f'oos_{sym_slug}')
         validator.generate_summary(results, body.symbol, output_path=f'{out_stem}.txt')
@@ -840,16 +887,16 @@ def create_edge(body: CreateEdgeRequest):
         try:
             eval_formula(body.long_formula, dummy_df)
         except Exception as e:
-            return {'status': 'error', 'error': f'Long formula error: {e}'}
+            raise HTTPException(400, f'Long formula error: {e}')
         if body.short_formula:
             try:
                 eval_formula(body.short_formula, dummy_df)
             except Exception as e:
-                return {'status': 'error', 'error': f'Short formula error: {e}'}
+                raise HTTPException(400, f'Short formula error: {e}')
 
         horizons = [int(h.strip()) for h in body.horizons.split(',') if h.strip()]
         if not horizons:
-            return {'status': 'error', 'error': 'At least one horizon required'}
+            raise HTTPException(400, 'At least one horizon required')
 
         filepath = generate_edge_file(
             name=body.name,
@@ -871,5 +918,7 @@ def create_edge(body: CreateEdgeRequest):
         _init_analysis_cache()
 
         return {'status': 'created', 'filepath': filepath}
+    except HTTPException:
+        raise
     except Exception as e:
-        return {'status': 'error', 'error': str(e)}
+        raise HTTPException(400, str(e))

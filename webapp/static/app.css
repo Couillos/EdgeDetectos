@@ -95,6 +95,11 @@ img { max-width: 100%; height: auto; }
 .card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px var(--shadow); border-color: var(--bg-hover); }
 .card-value { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
 .card-label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+.kpi-group { display: flex; gap: 0; }
+.kpi-item { flex: 1; text-align: center; padding: 4px 8px; border-right: 1px solid var(--border); }
+.kpi-item:last-child { border-right: none; }
+.kpi-item .kpi-value { font-size: 16px; font-weight: 700; line-height: 1.1; }
+.kpi-item .kpi-label { font-size: 9px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.2px; margin-top: 1px; }
 
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -243,17 +248,19 @@ table.data-table tr.selected { background: rgba(88, 166, 255, 0.08); }
 .horizon-table tr.best { background: rgba(61, 185, 80, 0.06); }
 
 .oos-verdicts { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
-.oos-card { padding: 16px; border-radius: var(--radius); border: 1px solid var(--border); text-align: center; }
-.oos-card .count { font-size: 32px; font-weight: 700; }
-.oos-card .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
-.oos-card.strong { border-color: var(--accent-green); background: rgba(61, 185, 80, 0.06); }
+.oos-card { padding: 10px; border-radius: var(--radius); border: 1px solid var(--border); text-align: center; }
+.oos-card .count { font-size: 22px; font-weight: 700; }
+.oos-card .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; margin-top: 2px; }
 .oos-card.strong .count { color: var(--accent-green); }
-.oos-card.pass { border-color: var(--accent-blue); background: rgba(88, 166, 255, 0.06); }
 .oos-card.pass .count { color: var(--accent-blue); }
-.oos-card.weak { border-color: var(--accent-yellow); background: rgba(210, 153, 34, 0.06); }
 .oos-card.weak .count { color: var(--accent-yellow); }
-.oos-card.fail { border-color: var(--accent-red); background: rgba(248, 81, 73, 0.06); }
 .oos-card.fail .count { color: var(--accent-red); }
+.oos-verdicts.single-card { display: block; margin-bottom: 16px; }
+.oos-verdicts.single-card > .card { padding: 6px 0 !important; }
+.oos-verdicts.single-card .oos-card { flex: 1; border: none; border-right: 1px solid var(--border); border-radius: 0; background: none; padding: 3px 6px; }
+.oos-verdicts.single-card .oos-card:last-child { border-right: none; }
+.oos-verdicts.single-card .oos-card .count { font-size: 14px; }
+.oos-verdicts.single-card .oos-card .label { font-size: 8px; letter-spacing: 0.15px; }
 
 .row-STRONG { border-left: 3px solid var(--accent-green) !important; }
 .row-PASS { border-left: 3px solid var(--accent-blue) !important; }
@@ -335,3 +342,20 @@ pre.raw-json { background: var(--bg-primary); padding: 16px; border-radius: var(
   background: var(--accent-blue);
   color: #fff;
 }
+
+/* ─── Code Viewer ──────────────────────── */
+.code-block {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 16px;
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  tab-size: 2;
+}
+.code-block code { background: none; padding: 0; font-size: inherit; color: inherit; }
+.syn-comment { color: #6c7086; font-style: italic; }
+.syn-keyword { color: #cba6f7; }
+.syn-string  { color: #a6e3a1; }
+.syn-number  { color: #fab387; }

@@ -25,7 +25,8 @@ class OOSValidator:
     def validate_all(self, df: pd.DataFrame, reports_dir: str,
                      bt_path: str, sm_path: str,
                      n_workers: Optional[int] = None,
-                     quick: bool = True) -> List[Dict]:
+                     quick: bool = True,
+                     progress_callback=None) -> List[Dict]:
         df_oos = df[df.index >= self.split_date].copy()
         tmp_dir = Path('/tmp/oos_validation')
         tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -57,6 +58,8 @@ class OOSValidator:
                       f"decay={result.get('decay',{}).get('composite_decay',0):.2f} "
                       f"({elapsed:.0f}s)")
                 results.append(result)
+                if progress_callback:
+                    progress_callback(i, result)
 
         try: os.remove(oos_parquet)
         except: pass
