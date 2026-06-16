@@ -1,6 +1,6 @@
 # EdgeDetectos — Crypto Edge Backtesting Engine
 
-A quantitative framework for designing, backtesting, and validating trading edge strategies on cryptocurrency data. Define entry conditions using a declarative formula language with 95+ technical indicators, run multiprocessor backtests across 8 horizons (1h–168h), and statistically validate against out-of-sample data.
+A quantitative framework for designing, backtesting, and validating trading edge strategies on cryptocurrency data. Define entry conditions using a declarative formula language with 95+ technical indicators, run multiprocessor backtests across 8 horizons (1h–168h), and statistically validate against out-of-sample data — all from a CLI or a real-time Web SPA.
 
 ---
 
@@ -37,12 +37,14 @@ A quantitative framework for designing, backtesting, and validating trading edge
 │   └── worker.py               # Single-edge OOS worker
 │
 ├── webapp/                     # FastAPI + Vanilla JS SPA
-│   ├── server.py               # FastAPI backend (879 lines, SSE progress)
+│   ├── server.py               # FastAPI backend (977 lines, SSE progress)
 │   ├── templates/index.html    # SPA frontend
-│   └── static/                 # app.js (1163 lines), app.css
+│   └── static/                 # app.js (1319 lines), app.css
 │
-├── edges/                      # 800+ auto-generated edge .py files
-├── reports_*/                  # Per-symbol analysis output (JSON + PNG)
+├── edges/                      # 199 auto-generated edge .py files
+├── reports_{SYMBOL}/           # Per-symbol IS analysis output (JSON + PNG)
+├── reports_{SYMBOL}_oos/       # Per-symbol OOS analysis output (JSON)
+├── oos_{SYMBOL}.txt/csv        # OOS validation summary reports
 ├── cache/                      # OHLCV parquet cache
 └── candle_manager/             # Candle download & caching library
 ```
